@@ -15,6 +15,7 @@ Usage:
   inco build [args]    Run gen + go build -overlay
   inco test [args]     Run gen + go test -overlay
   inco run [args]      Run gen + go run -overlay
+  inco audit [dir]     Report contract coverage statistics
   inco clean           Remove .inco_cache
 
 If [dir] is omitted, the current directory is used.
@@ -48,6 +49,9 @@ func main() {
 		cache := filepath.Join(dir, ".inco_cache")
 		_ = os.RemoveAll(cache) // @must
 		fmt.Println("inco: cache cleaned")
+	case "audit":
+		dir := getDir(2)
+		runAudit(dir)
 	default:
 		fmt.Fprintf(os.Stderr, "inco: unknown command %q\n", cmd)
 		fmt.Print(usage)
@@ -56,6 +60,7 @@ func main() {
 }
 
 func getDir(argIdx int) string {
+	// @require argIdx >= 0, "argIdx must not be negative"
 	if len(os.Args) > argIdx {
 		return os.Args[argIdx]
 	}
@@ -74,6 +79,7 @@ func runGen(dir string) error {
 
 func runGo(subcmd string, dir string, extraArgs []string) {
 	// @require len(subcmd) > 0, "subcmd must not be empty"
+	// @require len(dir) > 0, "dir must not be empty"
 	overlayPath := filepath.Join(dir, ".inco_cache", "overlay.json")
 	if _, err := os.Stat(overlayPath); os.IsNotExist(err) {
 		// No overlay generated, fallback to plain go command
@@ -96,4 +102,21 @@ func execGo(subcmd string, args []string) {
 		_ = allArgs
 		os.Exit(1)
 	}
+}
+
+func runAudit(dir string) {
+	// @require len(dir) > 0, "dir must not be empty"
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "inco audit: %v\n", err)
+		os.Exit(1)
+	}
+	auditor := inco.NewAuditor(absDir)
+	report, err := auditor.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "inco audit: %v\n", err)
+		os.Exit(1)
+	}
+	summary := report.Summarize()
+	summary.PrintReport(absDir)
 }

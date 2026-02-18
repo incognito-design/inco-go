@@ -25,7 +25,7 @@ func Transfer(from *Account, to *Account, amount int) {
 
 | Directive | Meaning |
 |-----------|---------|
-| `// @require -nd var1, var2` | Precondition: variables must not be zero-valued |
+| `// @require -nd var1, var2` | Precondition: variables must not be zero-valued (type-aware) |
 | `// @require <expr>, "msg"` | Precondition: expression must be true |
 | `// @ensure -nd var`         | Postcondition (via `defer`): must not be zero-valued at return |
 | `// @must`                   | Execution assert: error must be nil, panic otherwise |
@@ -36,10 +36,10 @@ After running `inco gen`, the above is transformed into a shadow file in `.inco_
 func Transfer(from *Account, to *Account, amount int) {
     // @require -nd from, to  →
     if from == nil {
-        panic("inco // require -nd violation: [from] is defaulted at transfer.go:24")
+        panic("inco // require -nd violation: [from] is defaulted (nil) at transfer.go:24")
     }
     if to == nil {
-        panic("inco // require -nd violation: [to] is defaulted at transfer.go:24")
+        panic("inco // require -nd violation: [to] is defaulted (nil) at transfer.go:24")
     }
 
     // @require amount > 0, "amount must be positive"  →
@@ -56,7 +56,7 @@ func Transfer(from *Account, to *Account, amount int) {
     // @ensure -nd res  →
     defer func() {
         if res == nil {
-            panic("inco // ensure -nd violation: [res] is defaulted at transfer.go:30")
+            panic("inco // ensure -nd violation: [res] is defaulted (nil) at transfer.go:30")
         }
     }()
 
@@ -65,6 +65,56 @@ func Transfer(from *Account, to *Account, amount int) {
 ```
 
 Your source stays clean — the shadow files live in `.inco_cache/` and are wired in via `go build -overlay`.
+
+## Type-Aware Zero-Value Checks
+
+`-nd` generates **type-specific** zero-value assertions using `go/types` analysis:
+
+| Type | Generated condition |
+|------|--------------------|
+| pointer / slice / map / chan / func / interface | `var == nil` |
+| string | `var == ""` |
+| integer | `var == 0` |
+| float | `var == 0.0` |
+| bool | `!var` |
+| comparable struct | `var == (T{})` |
+| comparable array | `var == ([N]T{})` |
+| comparable type param | `var == *new(T)` |
+| non-comparable type param (`any`) | `reflect.ValueOf(&var).Elem().IsZero()` |
+
+Panic messages include the zero-value description for easier debugging:
+```
+inco // require -nd violation: [name] is defaulted (empty string) at main.go:10
+inco // require -nd violation: [count] is defaulted (zero) at main.go:11
+```
+
+## Generics Support
+
+Inco fully supports generic functions and types. The zero-value check strategy is chosen based on the type parameter's constraint:
+
+```go
+// comparable constraint → generates: result == *new(T)
+func FirstNonZero[T comparable](items []T) (result T) {
+    // @ensure -nd result
+    for _, v := range items {
+        return v
+    }
+    return
+}
+
+// any constraint → generates: reflect.ValueOf(&v).Elem().IsZero()
+// (import "reflect" is auto-added)
+func MustNotBeZero[T any](v T) T {
+    // @require -nd v
+    return v
+}
+
+// Expression mode works with type params too
+func Clamp[N Number](val, lo, hi N) N {
+    // @require lo <= hi, "lo must not exceed hi"
+    ...
+}
+```
 
 ## Usage
 
@@ -100,16 +150,27 @@ make install    # Install to $GOPATH/bin
 ## How it works
 
 1. `inco gen` scans all `.go` files for `@require`, `@ensure`, `@must` comments
-2. Generates shadow files with injected assertions in `.inco_cache/`
-3. Produces `overlay.json` for `go build -overlay`
-4. Source files remain untouched — zero invasion
+2. Type-checks each package via `go/types` for type-aware assertion generation
+3. Generates shadow files with injected assertions in `.inco_cache/`
+4. Injects `//line` directives so panic stack traces point back to original source lines
+5. Produces `overlay.json` for `go build -overlay`
+6. Source files remain untouched — zero invasion
+
+At gen time, constant `@require` expressions that evaluate to `false` are detected and warnings are emitted.
 
 ## Project structure
 
 ```
 cmd/inco/           CLI entry point
-internal/inco/      Core engine (contract parsing, AST injection, overlay generation)
-example/            Demo files showcasing all directive types
+internal/inco/      Core engine:
+  contract.go         Directive parsing
+  engine.go           AST injection, overlay generation, //line mapping
+  typecheck.go        Type resolution, zero-value checks, generics support
+example/            Demo files:
+  demo.go             Basic directives
+  transfer.go         Full directive set
+  edge_cases.go       Closures, multi-line @must, nested ensure
+  generics.go         Type parameters: comparable, any, mixed,  expression mode
 ```
 
 ## Design
@@ -118,6 +179,8 @@ example/            Demo files showcasing all directive types
 - **Zero-overhead option**: Strip via `-tags` in production, or keep for fail-fast
 - **Self-bootstrapping**: Inco is built with Inco — its own source uses `@require` and `@must`
 - **Cache-friendly**: Content-hash based filenames for stable build cache
+- **Type-aware**: Full `go/types` integration — smart zero-value checks for all Go types including generics
+- **Source-mapped**: `//line` directives in shadow files preserve original file:line in stack traces
 
 ## License
 
