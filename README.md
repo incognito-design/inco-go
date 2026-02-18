@@ -30,6 +30,42 @@ func Transfer(from *Account, to *Account, amount int) {
 | `// @ensure -nd var`         | Postcondition (via `defer`): must not be zero-valued at return |
 | `// @must`                   | Execution assert: error must be nil, panic otherwise |
 
+After running `inco gen`, the above is transformed into a shadow file in `.inco_cache/`:
+
+```go
+func Transfer(from *Account, to *Account, amount int) {
+    // @require -nd from, to  →
+    if from == nil {
+        panic("inco // require -nd violation: [from] is defaulted at transfer.go:24")
+    }
+    if to == nil {
+        panic("inco // require -nd violation: [to] is defaulted at transfer.go:24")
+    }
+
+    // @require amount > 0, "amount must be positive"  →
+    if !(amount > 0) {
+        panic("amount must be positive at transfer.go:25")
+    }
+
+    // res, _ := db.Exec(query) // @must  →
+    res, _inco_err_28 := db.Exec(query)
+    if _inco_err_28 != nil {
+        panic("inco // must violation at transfer.go:28: " + _inco_err_28.Error())
+    }
+
+    // @ensure -nd res  →
+    defer func() {
+        if res == nil {
+            panic("inco // ensure -nd violation: [res] is defaulted at transfer.go:30")
+        }
+    }()
+
+    fmt.Printf("Transfer %d from %s to %s, affected %d rows\n", amount, from.ID, to.ID, res.RowsAffected)
+}
+```
+
+Your source stays clean — the shadow files live in `.inco_cache/` and are wired in via `go build -overlay`.
+
 ## Usage
 
 ```bash
