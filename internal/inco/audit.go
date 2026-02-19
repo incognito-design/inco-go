@@ -5,485 +5,347 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"go/types"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
-// AuditReport holds the full audit result for a project.
-type AuditReport struct {
-	Root  string
-	Files []FileAudit
-}
+// ---------------------------------------------------------------------------
+// Audit types
+// ---------------------------------------------------------------------------
 
-// FileAudit holds audit information for a single file.
-type FileAudit struct {
-	Path      string
-	RelPath   string
-	Functions []FuncAudit
-}
-
-// FuncAudit holds contract coverage for a single function.
+// FuncAudit holds per-function audit data.
 type FuncAudit struct {
-	Name       string
-	Line       int
-	Params     []ParamInfo   // parameters eligible for contracts
-	Returns    []ParamInfo   // named return values
-	HasRequire bool          // has at least one @require
-	Directives []DirectiveAt // all directives found in this function
-	// Derived from analysis
-	ErrorAssignments   int // assignments that discard errors (have _ for error)
-	GuardedAssignments int // error-discarding assignments covered by @must
+	Name         string // function name (or "func literal" for closures)
+	Line         int    // 1-based line number of declaration
+	RequireCount int    // number of require directives in this function
 }
 
-// ParamInfo describes a function parameter or return value.
-type ParamInfo struct {
-	Name string
-	Type string // human-readable type
+// FileAudit holds per-file audit data.
+type FileAudit struct {
+	Path         string      // absolute path
+	RelPath      string      // relative to root
+	Funcs        []FuncAudit // declared functions
+	IfCount      int         // native if statements
+	RequireCount int         // require directives
+	MustCount    int         // must directives
+	EnsureCount  int         // ensure directives
 }
 
-// DirectiveAt records a directive and its location.
-type DirectiveAt struct {
-	Kind      Kind
-	Line      int
-	Text      string // original comment text
-	Ret       bool   // has -ret flag
-	RetCustom bool   // has -ret(expr, ...) custom expressions
-	Log       bool   // has -log flag
+// AuditResult is the aggregate report.
+type AuditResult struct {
+	Files           []FileAudit
+	TotalFiles      int
+	TotalFuncs      int
+	GuardedFuncs    int // functions with >= 1 require directive
+	TotalIfs        int
+	TotalRequires   int
+	TotalMusts      int
+	TotalEnsures    int
+	TotalDirectives int
 }
 
-// AuditSummary is the aggregate statistics across all files.
-type AuditSummary struct {
-	TotalFiles         int
-	FilesWithContracts int
+// ---------------------------------------------------------------------------
+// Audit entry point
+// ---------------------------------------------------------------------------
 
-	TotalFuncs       int
-	FuncsWithRequire int
-	FuncsWithAny     int // has at least one directive of any kind
-
-	TotalDirectives    int
-	RequireCount       int
-	MustCount          int
-	MustRetCount       int // @must with -ret flag
-	MustRetCustomCount int // @must with -ret(expr, ...) custom expressions
-	MustLogCount       int // @must with -log flag
-	RetCount           int // @require with -ret flag
-	RetCustomCount     int // @require with -ret(expr, ...) custom expressions
-	LogCount           int // @require with -log flag
-
-	TotalErrorAssignments   int
-	GuardedErrorAssignments int
-
-	// Per-function detail for uncovered functions
-	UncoveredFuncs []UncoveredFunc
-}
-
-// UncoveredFunc identifies a function that has no contract coverage.
-type UncoveredFunc struct {
-	File string
-	Name string
-	Line int
-}
-
-// Summarize computes aggregate statistics from the audit report.
-func (r *AuditReport) Summarize() AuditSummary {
-	// @require -nd r
-	if r == nil {
-		return AuditSummary{}
+// Audit scans all Go source files under root and produces an AuditResult
+// summarising @require coverage and directive-vs-if ratios.
+func Audit(root string) (*AuditResult, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
 	}
-	var s AuditSummary
-	s.TotalFiles = len(r.Files)
-	for _, f := range r.Files {
-		fileHasContracts := false
-		for _, fn := range f.Functions {
-			s.TotalFuncs++
-			hasAny := false
-			for _, d := range fn.Directives {
-				s.TotalDirectives++
-				switch d.Kind {
-				case Require:
-					s.RequireCount++
-					if d.Ret {
-						s.RetCount++
-						if d.RetCustom {
-							s.RetCustomCount++
-						}
-					}
-					if d.Log {
-						s.LogCount++
-					}
-				case Must:
-					s.MustCount++
-					if d.Ret {
-						s.MustRetCount++
-						if d.RetCustom {
-							s.MustRetCustomCount++
-						}
-					}
-					if d.Log {
-						s.MustLogCount++
-					}
-				}
-			}
-			if fn.HasRequire {
-				s.FuncsWithRequire++
-				hasAny = true
-			}
-			if len(fn.Directives) > 0 {
-				hasAny = true
-				fileHasContracts = true
-			}
-			if hasAny {
-				s.FuncsWithAny++
-			} else if fn.Name != "" {
-				s.UncoveredFuncs = append(s.UncoveredFuncs, UncoveredFunc{
-					File: f.RelPath,
-					Name: fn.Name,
-					Line: fn.Line,
-				})
-			}
-			s.TotalErrorAssignments += fn.ErrorAssignments
-			s.GuardedErrorAssignments += fn.GuardedAssignments
+
+	fset := token.NewFileSet()
+	var files []FileAudit
+
+	err = filepath.WalkDir(absRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		if fileHasContracts {
-			s.FilesWithContracts++
-		}
-	}
-	return s
-}
-
-// FuncCoverage returns the percentage of functions with at least one contract.
-func (s *AuditSummary) FuncCoverage() float64 {
-	// @require -ret(100.0) s.TotalFuncs > 0
-	if s.TotalFuncs == 0 {
-		return 100.0
-	}
-	return float64(s.FuncsWithAny) / float64(s.TotalFuncs) * 100.0
-}
-
-// ErrorCoverage returns the percentage of error-discarding assignments guarded by @must.
-func (s *AuditSummary) ErrorCoverage() float64 {
-	// @require -ret(100.0) s.TotalErrorAssignments > 0
-	if s.TotalErrorAssignments == 0 {
-		return 100.0
-	}
-	return float64(s.GuardedErrorAssignments) / float64(s.TotalErrorAssignments) * 100.0
-}
-
-// PrintReport writes a human-readable audit report to stdout.
-func (s *AuditSummary) PrintReport(root string) {
-	// @require len(root) > 0, "root must not be empty"
-	fmt.Println("inco audit — contract coverage report")
-	fmt.Printf("root: %s\n", root)
-	fmt.Println(strings.Repeat("─", 60))
-
-	// Directive counts
-	fmt.Printf("\n  %-24s %d\n", "Files scanned:", s.TotalFiles)
-	fmt.Printf("  %-24s %d\n", "Files with contracts:", s.FilesWithContracts)
-	fmt.Printf("  %-24s %d\n", "Functions found:", s.TotalFuncs)
-	fmt.Println()
-
-	fmt.Println("  Directives:")
-	fmt.Printf("    @require             %d\n", s.RequireCount)
-	if s.RetCount > 0 {
-		fmt.Printf("      ├─ -ret            %d\n", s.RetCount)
-	}
-	if s.RetCustomCount > 0 {
-		fmt.Printf("      ├─ -ret(...)       %d\n", s.RetCustomCount)
-	}
-	if s.LogCount > 0 {
-		fmt.Printf("      └─ -log            %d\n", s.LogCount)
-	}
-	fmt.Printf("    @must                %d\n", s.MustCount)
-	if s.MustRetCount > 0 {
-		fmt.Printf("      ├─ -ret            %d\n", s.MustRetCount)
-	}
-	if s.MustRetCustomCount > 0 {
-		fmt.Printf("      ├─ -ret(...)       %d\n", s.MustRetCustomCount)
-	}
-	if s.MustLogCount > 0 {
-		fmt.Printf("      └─ -log            %d\n", s.MustLogCount)
-	}
-	fmt.Printf("    total                %d\n", s.TotalDirectives)
-	fmt.Println()
-
-	// Coverage
-	fmt.Println("  Coverage:")
-	fmt.Printf("    functions w/ contracts   %d / %d  (%.1f%%)\n",
-		s.FuncsWithAny, s.TotalFuncs, s.FuncCoverage())
-	fmt.Printf("      └─ with @require       %d\n", s.FuncsWithRequire)
-	fmt.Printf("    error assigns guarded    %d / %d  (%.1f%%)\n",
-		s.GuardedErrorAssignments, s.TotalErrorAssignments, s.ErrorCoverage())
-	fmt.Println()
-
-	// Uncovered functions
-	if len(s.UncoveredFuncs) > 0 {
-		fmt.Println(strings.Repeat("─", 60))
-		fmt.Printf("  Uncovered functions (%d):\n", len(s.UncoveredFuncs))
-		for _, uf := range s.UncoveredFuncs {
-			fmt.Printf("    %s:%d  %s\n", uf.File, uf.Line, uf.Name)
-		}
-		fmt.Println()
-	}
-
-	// Overall bar
-	fmt.Println(strings.Repeat("─", 60))
-	cov := s.FuncCoverage()
-	bar := renderBar(cov, 30)
-	fmt.Printf("  contract coverage:  %s  %.1f%%\n", bar, cov)
-	fmt.Println()
-}
-
-// renderBar renders a simple ASCII progress bar.
-func renderBar(pct float64, width int) string {
-	// @require width > 0, "width must be positive"
-	filled := int(pct / 100.0 * float64(width))
-	if filled > width {
-		filled = width
-	}
-	if filled < 0 {
-		filled = 0
-	}
-	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
-}
-
-// --- Auditor: the analysis engine ---
-
-// commentDirective associates a parsed Directive with its source location.
-type commentDirective struct {
-	d    *Directive
-	pos  token.Pos
-	line int
-	text string
-}
-
-// Auditor walks Go source files and collects contract coverage information.
-type Auditor struct {
-	Root string
-}
-
-// NewAuditor creates a new Auditor for the given project root.
-func NewAuditor(root string) (a *Auditor) {
-	// @require len(root) > 0, "root must not be empty"
-	return &Auditor{Root: root}
-}
-
-// Run performs the audit and returns the report.
-func (a *Auditor) Run() (report *AuditReport, err error) {
-	report = &AuditReport{Root: a.Root}
-
-	// @must -ret
-	err = filepath.Walk(a.Root, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.IsDir() {
-			base := info.Name()
-			if strings.HasPrefix(base, ".") || base == "vendor" || base == "testdata" {
+		if d.IsDir() {
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		name := d.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
 		}
-		fa, _ := a.auditFile(path) // @must -ret
-		if fa != nil {
-			report.Files = append(report.Files, *fa)
+
+		fa, parseErr := auditFile(fset, absRoot, path)
+		if parseErr != nil {
+			return parseErr
 		}
+		files = append(files, fa)
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	// Sort files by path for deterministic output
-	sort.Slice(report.Files, func(i, j int) bool {
-		return report.Files[i].RelPath < report.Files[j].RelPath
-	})
+	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 
-	return report, nil
+	r := &AuditResult{Files: files, TotalFiles: len(files)}
+	for _, f := range files {
+		r.TotalIfs += f.IfCount
+		r.TotalRequires += f.RequireCount
+		r.TotalMusts += f.MustCount
+		r.TotalEnsures += f.EnsureCount
+		for _, fn := range f.Funcs {
+			r.TotalFuncs++
+			if fn.RequireCount > 0 {
+				r.GuardedFuncs++
+			}
+		}
+	}
+	r.TotalDirectives = r.TotalRequires + r.TotalMusts + r.TotalEnsures
+	return r, nil
 }
 
-// auditFile analyzes a single Go file for contract coverage.
-func (a *Auditor) auditFile(path string) (_ *FileAudit, err error) {
-	// @require len(path) > 0, "path must not be empty"
-	absPath, _ := filepath.Abs(path) // @must -ret
-	relPath, relErr := filepath.Rel(a.Root, absPath)
-	if relErr != nil {
-		relPath = absPath
+// ---------------------------------------------------------------------------
+// Per-file analysis
+// ---------------------------------------------------------------------------
+
+func auditFile(fset *token.FileSet, root, path string) (FileAudit, error) {
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return FileAudit{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, absPath, nil, parser.ParseComments) // @must -ret(nil, fmt.Errorf("inco audit: parse %s: %w", relPath, err))
-
-	fa := &FileAudit{
-		Path:    absPath,
-		RelPath: relPath,
+	relPath := path
+	if rel, e := filepath.Rel(root, path); e == nil {
+		relPath = rel
 	}
 
-	// Collect all directives with positions
-	var allDirectives []commentDirective
+	fa := FileAudit{Path: path, RelPath: relPath}
+
+	// Read source lines once for classification.
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return FileAudit{}, err
+	}
+	srcLines := strings.Split(string(src), "\n")
+
+	// 1. Parse directives from comments.
+	type directiveInfo struct {
+		kind DirectiveKind
+		pos  token.Pos
+	}
+	var directives []directiveInfo
+
 	for _, cg := range f.Comments {
 		for _, c := range cg.List {
 			d := ParseDirective(c.Text)
-			if d != nil {
-				allDirectives = append(allDirectives, commentDirective{
-					d:    d,
-					pos:  c.Pos(),
-					line: fset.Position(c.Pos()).Line,
-					text: c.Text,
-				})
+			if d == nil {
+				continue
+			}
+			// Classify: same as engine — standalone @require vs inline @must/@ensure.
+			line := fset.Position(c.Pos()).Line
+			if line < 1 || line > len(srcLines) {
+				continue
+			}
+			trimmed := strings.TrimSpace(srcLines[line-1])
+			isStandalone := strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*")
+
+			switch d.Kind {
+			case KindRequire:
+				if isStandalone {
+					fa.RequireCount++
+					directives = append(directives, directiveInfo{kind: KindRequire, pos: c.Pos()})
+				}
+			case KindMust:
+				if !isStandalone {
+					fa.MustCount++
+				}
+			case KindEnsure:
+				if !isStandalone {
+					fa.EnsureCount++
+				}
 			}
 		}
 	}
 
-	// Walk all function declarations (including methods)
+	// 2. Count if statements.
 	ast.Inspect(f, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.FuncDecl:
-			fnAudit := a.auditFunc(node, fset, f, allDirectives)
-			fa.Functions = append(fa.Functions, fnAudit)
-			return false // don't recurse into function body for FuncDecl; auditFunc handles it
+		if _, ok := n.(*ast.IfStmt); ok {
+			fa.IfCount++
 		}
 		return true
 	})
 
-	// Skip files with no functions
-	if len(fa.Functions) == 0 {
-		return nil, nil
+	// 3. Collect functions and map @require to enclosing function.
+	type funcRange struct {
+		name  string
+		line  int
+		start token.Pos
+		end   token.Pos
+	}
+	var funcRanges []funcRange
+
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch fn := n.(type) {
+		case *ast.FuncDecl:
+			if fn.Body != nil {
+				name := fn.Name.Name
+				if fn.Recv != nil && len(fn.Recv.List) > 0 {
+					name = recvTypeName(fn.Recv.List[0].Type) + "." + name
+				}
+				funcRanges = append(funcRanges, funcRange{
+					name:  name,
+					line:  fset.Position(fn.Pos()).Line,
+					start: fn.Body.Pos(),
+					end:   fn.Body.End(),
+				})
+			}
+		case *ast.FuncLit:
+			if fn.Body != nil {
+				funcRanges = append(funcRanges, funcRange{
+					name:  "func literal",
+					line:  fset.Position(fn.Pos()).Line,
+					start: fn.Body.Pos(),
+					end:   fn.Body.End(),
+				})
+			}
+		}
+		return true
+	})
+
+	// Map each @require to its enclosing function.
+	requireCounts := make(map[int]int) // funcRanges index → count
+	for _, d := range directives {
+		if d.kind != KindRequire {
+			continue
+		}
+		// Find innermost enclosing function.
+		bestIdx := -1
+		for i, fr := range funcRanges {
+			if fr.start <= d.pos && d.pos <= fr.end {
+				if bestIdx == -1 || funcRanges[bestIdx].start < fr.start {
+					bestIdx = i
+				}
+			}
+		}
+		if bestIdx >= 0 {
+			requireCounts[bestIdx]++
+		}
+	}
+
+	for i, fr := range funcRanges {
+		fa.Funcs = append(fa.Funcs, FuncAudit{
+			Name:         fr.name,
+			Line:         fr.line,
+			RequireCount: requireCounts[i],
+		})
 	}
 
 	return fa, nil
 }
 
-// auditFunc analyzes a single function for contract coverage.
-func (a *Auditor) auditFunc(fn *ast.FuncDecl, fset *token.FileSet, f *ast.File, allDirectives []commentDirective) FuncAudit {
-	// @require -nd fn, fset, f
-	pos := fset.Position(fn.Pos())
-	audit := FuncAudit{
-		Name: fn.Name.Name,
-		Line: pos.Line,
+// recvTypeName extracts the type name from a method receiver expression.
+func recvTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return recvTypeName(t.X)
+	case *ast.IndexExpr:
+		return recvTypeName(t.X)
+	case *ast.IndexListExpr:
+		return recvTypeName(t.X)
 	}
-
-	// Collect parameter info
-	if fn.Type.Params != nil {
-		for _, field := range fn.Type.Params.List {
-			typStr := types.ExprString(field.Type)
-			for _, name := range field.Names {
-				audit.Params = append(audit.Params, ParamInfo{
-					Name: name.Name,
-					Type: typStr,
-				})
-			}
-			// Unnamed params (e.g., func(int, string))
-			if len(field.Names) == 0 {
-				audit.Params = append(audit.Params, ParamInfo{
-					Name: "_",
-					Type: typStr,
-				})
-			}
-		}
-	}
-
-	// Collect named return value info
-	if fn.Type.Results != nil {
-		for _, field := range fn.Type.Results.List {
-			typStr := types.ExprString(field.Type)
-			for _, name := range field.Names {
-				audit.Returns = append(audit.Returns, ParamInfo{
-					Name: name.Name,
-					Type: typStr,
-				})
-			}
-		}
-	}
-
-	// Find directives inside this function's body
-	if fn.Body == nil {
-		return audit
-	}
-
-	bodyStart := fn.Body.Lbrace
-	bodyEnd := fn.Body.Rbrace
-
-	for _, cd := range allDirectives {
-		if cd.pos > bodyStart && cd.pos < bodyEnd {
-			audit.Directives = append(audit.Directives, DirectiveAt{
-				Kind:      cd.d.Kind,
-				Line:      cd.line,
-				Text:      cd.text,
-				Ret:       cd.d.Ret,
-				RetCustom: cd.d.Ret && len(cd.d.RetExprs) > 0,
-				Log:       cd.d.Log,
-			})
-			switch cd.d.Kind {
-			case Require:
-				audit.HasRequire = true
-			}
-		}
-	}
-
-	// Count error-discarding assignments and @must coverage
-	a.countErrorAssignments(fn.Body, fset, allDirectives, &audit)
-
-	return audit
+	return "?"
 }
 
-// countErrorAssignments walks a function body and counts assignments where
-// an error is discarded with _ and whether they have @must coverage.
-func (a *Auditor) countErrorAssignments(body *ast.BlockStmt, fset *token.FileSet, allDirectives []commentDirective, audit *FuncAudit) {
-	// @require -nd body, fset, audit
-	// Track which @must directives have been consumed (each guards exactly one assignment)
-	consumed := make(map[int]bool) // key: directive line number
+// ---------------------------------------------------------------------------
+// Report rendering
+// ---------------------------------------------------------------------------
 
-	ast.Inspect(body, func(n ast.Node) bool {
-		assign, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
+// PrintReport writes a human-readable audit report to w.
+func (r *AuditResult) PrintReport(w io.Writer) {
+	fmt.Fprintf(w, "inco audit — contract coverage report\n")
+	fmt.Fprintf(w, "======================================\n\n")
+
+	fmt.Fprintf(w, "  Files scanned:  %d\n", r.TotalFiles)
+	fmt.Fprintf(w, "  Functions:      %d\n\n", r.TotalFuncs)
+
+	// --- @require coverage ---
+	fmt.Fprintf(w, "@require coverage:\n")
+	if r.TotalFuncs > 0 {
+		pct := float64(r.GuardedFuncs) / float64(r.TotalFuncs) * 100
+		fmt.Fprintf(w, "  With @require:     %d / %d  (%.1f%%)\n", r.GuardedFuncs, r.TotalFuncs, pct)
+		fmt.Fprintf(w, "  Without @require:  %d / %d  (%.1f%%)\n\n",
+			r.TotalFuncs-r.GuardedFuncs, r.TotalFuncs, 100-pct)
+	} else {
+		fmt.Fprintf(w, "  (no functions found)\n\n")
+	}
+
+	// --- Directive vs if ---
+	fmt.Fprintf(w, "Directive vs if:\n")
+	fmt.Fprintf(w, "  @require:           %d\n", r.TotalRequires)
+	fmt.Fprintf(w, "  @must:              %d\n", r.TotalMusts)
+	fmt.Fprintf(w, "  @ensure:            %d\n", r.TotalEnsures)
+	fmt.Fprintf(w, "  ─────────────────────\n")
+	fmt.Fprintf(w, "  Total directives:   %d\n", r.TotalDirectives)
+	fmt.Fprintf(w, "  Native if stmts:    %d\n", r.TotalIfs)
+	if r.TotalIfs > 0 {
+		ratio := float64(r.TotalDirectives) / float64(r.TotalIfs)
+		fmt.Fprintf(w, "  Directive/if ratio: %.2f\n\n", ratio)
+	} else if r.TotalDirectives > 0 {
+		fmt.Fprintf(w, "  Directive/if ratio: ∞ (no if statements)\n\n")
+	} else {
+		fmt.Fprintf(w, "  Directive/if ratio: — (no directives or if statements)\n\n")
+	}
+
+	// --- Per-file breakdown ---
+	fmt.Fprintf(w, "Per-file breakdown:\n")
+	// Calculate column widths.
+	maxPath := 4 // "File"
+	for _, f := range r.Files {
+		if len(f.RelPath) > maxPath {
+			maxPath = len(f.RelPath)
 		}
+	}
+	if maxPath > 50 {
+		maxPath = 50
+	}
 
-		// Check if any LHS is _ (potential error discard)
-		hasBlank := false
-		for _, lhs := range assign.Lhs {
-			ident, ok := lhs.(*ast.Ident)
-			if ok && ident.Name == "_" {
-				hasBlank = true
-				break
+	fmt.Fprintf(w, "  %-*s  @require  @must  @ensure  if  funcs  guarded\n", maxPath, "File")
+	fmt.Fprintf(w, "  %s  %s\n", strings.Repeat("─", maxPath), "────────  ─────  ───────  ──  ─────  ───────")
+	for _, f := range r.Files {
+		guarded := 0
+		for _, fn := range f.Funcs {
+			if fn.RequireCount > 0 {
+				guarded++
 			}
 		}
-		if !hasBlank {
-			return true
+		display := f.RelPath
+		if len(display) > maxPath {
+			display = "…" + display[len(display)-maxPath+1:]
 		}
+		fmt.Fprintf(w, "  %-*s  %7d  %5d  %7d  %2d  %5d  %7d\n",
+			maxPath, display, f.RequireCount, f.MustCount, f.EnsureCount,
+			f.IfCount, len(f.Funcs), guarded)
+	}
 
-		// Heuristic: multi-value assignment with _ on LHS likely discards an error
-		if len(assign.Lhs) < 2 {
-			return true
-		}
-
-		audit.ErrorAssignments++
-
-		// Check if this assignment is guarded by @must
-		assignLine := fset.Position(assign.Pos()).Line
-		for _, cd := range allDirectives {
-			if cd.d.Kind != Must || consumed[cd.line] {
-				continue
-			}
-			// Inline @must: same line as assignment
-			if cd.line == assignLine {
-				audit.GuardedAssignments++
-				consumed[cd.line] = true
-				return true
-			}
-			// Block @must: directive on a preceding line, close to the assignment.
-			// For multi-line calls the gap can be a few lines, but each @must
-			// guards exactly one assignment (tracked via consumed map).
-			if cd.line < assignLine && cd.line >= assignLine-5 {
-				audit.GuardedAssignments++
-				consumed[cd.line] = true
-				return true
+	// --- Unguarded functions ---
+	var unguarded []string
+	for _, f := range r.Files {
+		for _, fn := range f.Funcs {
+			if fn.RequireCount == 0 && fn.Name != "func literal" {
+				unguarded = append(unguarded, fmt.Sprintf("  %s:%d  %s", f.RelPath, fn.Line, fn.Name))
 			}
 		}
-
-		return true
-	})
+	}
+	if len(unguarded) > 0 {
+		fmt.Fprintf(w, "\nFunctions without @require (%d):\n", len(unguarded))
+		for _, s := range unguarded {
+			fmt.Fprintln(w, s)
+		}
+	}
 }

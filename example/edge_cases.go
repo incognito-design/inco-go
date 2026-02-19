@@ -1,17 +1,12 @@
 package example
 
-import (
-	"errors"
-	"fmt"
-)
+import "fmt"
 
-var ErrNotFound = errors.New("not found")
-
-// --- Case 1: Anonymous function (closure) with @require ---
+// --- Case 1: Closure with @require ---
 
 func ProcessWithCallback(db *DB) {
 	handler := func(u *User) {
-		// @require -nd u
+		// @require u != nil
 		fmt.Println(u.Name)
 	}
 
@@ -19,82 +14,28 @@ func ProcessWithCallback(db *DB) {
 	handler(u)
 }
 
-// --- Case 2: Multi-line @must (directive on its own line, statement spans multiple lines) ---
-
-func FetchMultiLine(db *DB) *User {
-	// @must
-	res, _ := db.Query(
-		"SELECT * FROM users WHERE id = ?",
-	)
-
-	fmt.Println("Fetched:", res.Name)
-	return res
-}
-
-// --- Case 3: Nested closure with @require ---
-
-func WithEnsure() (result *User) {
-	// @require -nd result
-
-	compute := func() *User {
-		// @require -nd result
-		return &User{Name: "inner"}
-	}
-
-	_ = compute
-	return nil
-}
-
-// --- Case 4: @require -ret (return on violation, no panic) ---
-
-func SafeGetUser(u *User) (result *User, ok bool) {
-	// @require -ret -nd u
-	return u, true
-}
-
-// --- Case 5: @require -ret with expression and unnamed returns ---
-
-func SafeTransfer(amount int) (*QueryResult, error) {
-	// @require -ret amount > 0
-	return &QueryResult{RowsAffected: 1}, nil
-}
-
-// --- Case 6: @require -log (log + return on violation) ---
-
-func LogAndReturn(u *User, name string) (result *User) {
-	// @require -log -nd u
-	// @require -log len(name) > 0, "name must not be empty"
-	result = u
-	result.Name = name
-	return
-}
-
-// --- Case 7: @require -ret(expr, ...) custom return expressions ---
+// --- Case 2: @must with custom panic message ---
 
 func FindUser(db *DB, id string) (*User, error) {
-	// @require -ret(nil, ErrNotFound) -nd db
-	// @require -ret(nil, fmt.Errorf("invalid id: %s", id)) len(id) > 0
-	user, _ := db.Query("SELECT * FROM users WHERE id = ?")
+	// @require db != nil panic("db is nil")
+	// @require len(id) > 0 panic(fmt.Sprintf("invalid id: %q", id))
+	user, _ := db.Query("SELECT * FROM users WHERE id = ?") // @must panic("query failed")
 	return user, nil
 }
 
-// --- Case 8: @require -ret(expr) single custom value ---
+// --- Case 3: Multiple directives on same function ---
 
-func GetDefault(x *int) int {
-	// @require -ret(-1) -nd x
-	return *x
+func MultiCheck(a, b int, name string) {
+	// @require a > 0 panic("a must be positive")
+	// @require b < 1000 panic("b overflow")
+	// @require len(name) > 0
+
+	fmt.Println(a, b, name)
 }
 
-// --- Case 9: @must -ret (return error instead of panic) ---
+// --- Case 4: @ensure for map lookup ---
 
-func SafeFetch(db *DB) (*User, error) {
-	user, _ := db.Query("SELECT 1") // @must -ret
-	return user, nil
-}
-
-// --- Case 10: @must -ret(expr, ...) custom return on error ---
-
-func FetchOrDefault(db *DB) (*User, error) {
-	user, _ := db.Query("SELECT 1") // @must -ret(&User{Name: "guest"}, nil)
-	return user, nil
+func LookupKey(m map[string]int, key string) int {
+	v, _ := m[key] // @ensure panic("key not found: " + key)
+	return v
 }

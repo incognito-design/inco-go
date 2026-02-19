@@ -8,15 +8,15 @@ import (
 	inco "github.com/incognito-design/inco/internal/inco"
 )
 
-const usage = `inco - Incognito Contract: invisible constraints, invincible code.
+const usage = `inco — invisible constraints, invincible code.
 
 Usage:
   inco gen [dir]       Scan source files and generate overlay
   inco build [args]    Run gen + go build -overlay
   inco test [args]     Run gen + go test -overlay
   inco run [args]      Run gen + go run -overlay
-  inco audit [dir]     Report contract coverage statistics
-  inco clean           Remove .inco_cache
+  inco audit [dir]     Contract coverage report
+  inco clean [dir]     Remove .inco_cache
 
 If [dir] is omitted, the current directory is used.
 `
@@ -27,40 +27,48 @@ func main() {
 		os.Exit(0)
 	}
 
-	cmd := os.Args[1]
-	switch cmd {
+	switch os.Args[1] {
 	case "gen":
 		dir := getDir(2)
-		_ = runGen(dir) // @must
+		if err := runGen(dir); err != nil {
+			fatal(err)
+		}
 	case "build":
-		dir := "."
-		_ = runGen(dir) // @must
-		runGo("build", dir, os.Args[2:])
+		if err := runGen("."); err != nil {
+			fatal(err)
+		}
+		runGo("build", ".", os.Args[2:])
 	case "test":
-		dir := "."
-		_ = runGen(dir) // @must
-		runGo("test", dir, os.Args[2:])
+		if err := runGen("."); err != nil {
+			fatal(err)
+		}
+		runGo("test", ".", os.Args[2:])
 	case "run":
-		dir := "."
-		_ = runGen(dir) // @must
-		runGo("run", dir, os.Args[2:])
-	case "clean":
-		dir := getDir(2)
-		cache := filepath.Join(dir, ".inco_cache")
-		_ = os.RemoveAll(cache) // @must
-		fmt.Println("inco: cache cleaned")
+		if err := runGen("."); err != nil {
+			fatal(err)
+		}
+		runGo("run", ".", os.Args[2:])
 	case "audit":
 		dir := getDir(2)
-		runAudit(dir)
+		result, err := runAudit(dir)
+		if err != nil {
+			fatal(err)
+		}
+		result.PrintReport(os.Stdout)
+	case "clean":
+		dir := getDir(2)
+		if err := os.RemoveAll(filepath.Join(dir, ".inco_cache")); err != nil {
+			fatal(err)
+		}
+		fmt.Println("inco: cache cleaned")
 	default:
-		fmt.Fprintf(os.Stderr, "inco: unknown command %q\n", cmd)
+		fmt.Fprintf(os.Stderr, "inco: unknown command %q\n", os.Args[1])
 		fmt.Print(usage)
 		os.Exit(1)
 	}
 }
 
 func getDir(argIdx int) string {
-	// @require argIdx >= 0, "argIdx must not be negative"
 	if len(os.Args) > argIdx {
 		return os.Args[argIdx]
 	}
@@ -68,40 +76,46 @@ func getDir(argIdx int) string {
 }
 
 func runGen(dir string) error {
-	// @require len(dir) > 0, "dir must not be empty"
-	absDir, _ := filepath.Abs(dir) // @must -ret
-	engine := inco.NewEngine(absDir)
-	return engine.Run()
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	return inco.NewEngine(absDir).Run()
 }
 
-func runGo(subcmd string, dir string, extraArgs []string) {
-	// @require len(subcmd) > 0, "subcmd must not be empty"
-	// @require len(dir) > 0, "dir must not be empty"
+func runAudit(dir string) (*inco.AuditResult, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	return inco.Audit(absDir)
+}
+
+func runGo(subcmd, dir string, extraArgs []string) {
 	overlayPath := filepath.Join(dir, ".inco_cache", "overlay.json")
 	if _, err := os.Stat(overlayPath); os.IsNotExist(err) {
-		// No overlay generated, fallback to plain go command
 		execGo(subcmd, extraArgs)
 		return
 	}
-	absOverlay, _ := filepath.Abs(overlayPath) // @must
+	absOverlay, err := filepath.Abs(overlayPath)
+	if err != nil {
+		fatal(err)
+	}
 	args := append([]string{fmt.Sprintf("-overlay=%s", absOverlay)}, extraArgs...)
 	execGo(subcmd, args)
 }
 
 func execGo(subcmd string, args []string) {
-	// @require len(subcmd) > 0, "subcmd must not be empty"
 	cmd := execCommand("go", append([]string{subcmd}, args...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	_ = cmd.Run() // @must
+	if err := cmd.Run(); err != nil {
+		os.Exit(1)
+	}
 }
 
-func runAudit(dir string) {
-	// @require len(dir) > 0, "dir must not be empty"
-	absDir, _ := filepath.Abs(dir) // @must
-	auditor := inco.NewAuditor(absDir)
-	report, _ := auditor.Run() // @must
-	summary := report.Summarize()
-	summary.PrintReport(absDir)
+func fatal(err error) {
+	fmt.Fprintf(os.Stderr, "inco: %v\n", err)
+	os.Exit(1)
 }

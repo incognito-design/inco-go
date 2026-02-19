@@ -2,185 +2,182 @@
 
 Invisible constraints. Invincible code.
 
-Inco is a Design-by-Contract (DbC) toolkit for Go. Define execution protocols using incognito comments; they are transformed into runtime assertions at build time via `-overlay`.
+Inco is a compile-time assertion engine for Go. Write contract directives as plain comments; they are transformed into `panic`-based runtime guards in shadow files, wired in via `go build -overlay`. Your source stays untouched.
 
 ## Philosophy
 
-Business logic should be pure. Defensive noise (`if x == nil`, `if err != nil`) belongs in the shadow, not in your source.
+Business logic should be pure. Defensive noise — `if x == nil`, `if err != nil` — belongs in the shadow, not in your source.
 
 Write the intent; Inco generates the shield.
 
 ### `if` is for logic, not for guarding
 
-In an Inco codebase, `if` statements should express **logic flow** — branching on business conditions, selecting behavior, iterating exit criteria. They should *not* be used for:
+In an Inco codebase, `if` should express **logic flow** — branching on business conditions, selecting behavior. Not for:
 
-- **Nil/zero guards** → use `@require -nd` or `@require -ret -nd`
-- **Value-range validation** → use `@require <expr>`
-- **Error propagation** (`if err != nil { return err }`) → use `// @must -ret`
-- **Error wrapping** (`if err != nil { return fmt.Errorf(...) }`) → use `// @must -ret(fmt.Errorf(...))`
-- **Silent error drops** (`if err != nil { return }`) → use `@require -log` or `// @must -ret`
+- **Nil guards** → `// @require ptr != nil`
+- **Value validation** → `// @require x > 0`
+- **Error checks** → `// @must`
+- **Boolean checks** → `// @ensure`
 
-When every defensive check is a directive, the remaining `if` statements in your code carry **real** semantic weight — they represent genuine decisions, not boilerplate.
+When every defensive check is a directive, the remaining `if` statements carry **real** semantic weight — genuine decisions, not boilerplate.
 
 ## Directives
 
+Three directive types, one action: **panic**.
+
 ```go
 func Transfer(from *Account, to *Account, amount int) {
-    // @require -nd from, to
-    // @require amount > 0, "amount must be positive"
-    
+    // @require from != nil
+    // @require to != nil
+    // @require amount > 0 panic("amount must be positive")
+
     res, _ := db.Exec(query) // @must
-    
-    // @ensure -nd res
+
+    v, _ := cache[key] // @ensure panic("key not found: " + key)
 }
 ```
 
-| Directive | Meaning |
-|-----------|---------|
-| `// @require -nd var1, var2` | Precondition: variables must not be zero-valued (type-aware) |
-| `// @require <expr>, "msg"` | Precondition: expression must be true |
-| `// @require -ret -nd var` | Precondition: return zero values on violation (instead of panic) |
-| `// @require -ret(e1, e2) -nd var` | Precondition: return custom expressions on violation |
-| `// @require -log -nd var` | Precondition: log message and return on violation |
-| `// @ensure -nd var`         | Postcondition (via `defer`): must not be zero-valued at return |
-| `// @must`                   | Execution assert: error must be nil, panic otherwise |\n| `// @must -ret`              | Error propagation: return error instead of panicking |\n| `// @must -ret(e1, e2)`      | Error handling: return custom expressions on error |
+| Directive | Position | Meaning |
+|-----------|----------|---------|
+| `// @require <expr>` | standalone | Precondition: expression must be true, else panic |
+| `// @require <expr> panic("msg")` | standalone | Precondition with custom panic message |
+| `// @must` | inline | Error check: captured `error` must be nil, else panic |
+| `// @must panic("msg")` | inline | Error check with custom panic message |
+| `// @ensure` | inline | Bool check: captured `bool` must be true, else panic |
+| `// @ensure panic("msg")` | inline | Bool check with custom panic message |
 
-After running `inco gen`, the above is transformed into a shadow file in `.inco_cache/`:
+### Generated Output
+
+After `inco gen`, the above becomes a shadow file in `.inco_cache/`:
 
 ```go
 func Transfer(from *Account, to *Account, amount int) {
-    // @require -nd from, to  →
-    if from == nil {
-        panic("inco // require -nd violation: [from] is defaulted (nil) at transfer.go:24")
+    if !(from != nil) {
+        panic("require violation: from != nil (at transfer.go:2)")
     }
-    if to == nil {
-        panic("inco // require -nd violation: [to] is defaulted (nil) at transfer.go:24")
+    if !(to != nil) {
+        panic("require violation: to != nil (at transfer.go:3)")
     }
-
-    // @require amount > 0, "amount must be positive"  →
     if !(amount > 0) {
-        panic("amount must be positive at transfer.go:25")
+        panic("amount must be positive")
     }
 
-    // res, _ := db.Exec(query) // @must  →
-    res, _inco_err_28 := db.Exec(query)
-    if _inco_err_28 != nil {
-        panic("inco // must violation at transfer.go:28: " + _inco_err_28.Error())
+    res, __inco_err := db.Exec(query)
+    if __inco_err != nil {
+        panic(__inco_err)
     }
 
-    // @ensure -nd res  →
-    defer func() {
-        if res == nil {
-            panic("inco // ensure -nd violation: [res] is defaulted (nil) at transfer.go:30")
-        }
-    }()
-
-    fmt.Printf("Transfer %d from %s to %s, affected %d rows\n", amount, from.ID, to.ID, res.RowsAffected)
-}
-```
-
-Your source stays clean — the shadow files live in `.inco_cache/` and are wired in via `go build -overlay`.
-
-## Soft Contracts: `-ret` and `-ret(...)`
-
-Not every violation warrants a panic. Use `-ret` to return on violation instead:
-
-```go
-// Return zero values on violation (silent guard)
-func SafeGet(db *DB, id string) (*User, error) {
-    // @require -ret -nd db
-    // @require -ret len(id) > 0
-    return db.Query("SELECT * FROM users WHERE id = ?")
-}
-
-// Return custom expressions on violation
-func FindUser(db *DB, id string) (*User, error) {
-    // @require -ret(nil, ErrNotFound) -nd db
-    // @require -ret(nil, fmt.Errorf("invalid id: %s", id)) len(id) > 0
-    return db.Query("SELECT * FROM users WHERE id = ?")
-}
-
-// Log + return on violation (auto-imports "log")
-func Process(order *Order) (result *Receipt) {
-    // @require -log -nd order
-    return
-}
-```
-
-`@must` also supports `-ret` for error propagation:
-
-```go
-// Replace `if err != nil { return err }` boilerplate
-func ProcessFile(path string) error {
-    f, _ := os.Open(path) // @must -ret
-    defer f.Close()
-    return nil
-}
-
-// Custom return expressions on error
-func Fetch(db *DB) (string, error) {
-    res, _ := db.Query("SELECT 1") // @must -ret("", ErrNotFound)
-    return res, nil
-}
-```
-
-Flags are order-insensitive and composable:
-```go
-// @require -ret -nd x              // return zero values if x is defaulted
-// @require -ret(nil, err) -nd x    // return custom expressions if x is defaulted
-// @require -log -nd x              // log + return (implies -ret)
-// @require -log -ret("", err) expr // log + return custom expressions
-```
-
-## Type-Aware Zero-Value Checks
-
-`-nd` generates **type-specific** zero-value assertions using `go/types` analysis:
-
-| Type | Generated condition |
-|------|--------------------|
-| pointer / slice / map / chan / func / interface | `var == nil` |
-| string | `var == ""` |
-| integer | `var == 0` |
-| float | `var == 0.0` |
-| bool | `!var` |
-| comparable struct | `var == (T{})` |
-| comparable array | `var == ([N]T{})` |
-| comparable type param | `var == *new(T)` |
-| non-comparable type param (`any`) | `reflect.ValueOf(&var).Elem().IsZero()` |
-
-Panic messages include the zero-value description for easier debugging:
-```
-inco // require -nd violation: [name] is defaulted (empty string) at main.go:10
-inco // require -nd violation: [count] is defaulted (zero) at main.go:11
-```
-
-## Generics Support
-
-Inco fully supports generic functions and types. The zero-value check strategy is chosen based on the type parameter's constraint:
-
-```go
-// comparable constraint → generates: result == *new(T)
-func FirstNonZero[T comparable](items []T) (result T) {
-    // @ensure -nd result
-    for _, v := range items {
-        return v
+    v, __inco_ok := cache[key]
+    if !__inco_ok {
+        panic("key not found: " + key)
     }
-    return
+}
+```
+
+Source files remain untouched. Shadow files live in `.inco_cache/` and are wired in via `go build -overlay`.
+
+## `@require` — Preconditions
+
+Standalone comment lines. The expression is a Go boolean expression; if it evaluates to false at runtime, the program panics.
+
+```go
+func CreateUser(name string, age int) {
+    // @require len(name) > 0
+    // @require age > 0
+    // ...
 }
 
-// any constraint → generates: reflect.ValueOf(&v).Elem().IsZero()
-// (import "reflect" is auto-added)
-func MustNotBeZero[T any](v T) T {
-    // @require -nd v
+func GetUser(u *User) {
+    // @require u != nil panic("user must not be nil")
+    // ...
+}
+```
+
+The `panic` keyword is unambiguous: since `panic` is a Go builtin, it cannot appear as a standalone identifier in a valid boolean expression. Everything before the trailing `panic` is the expression; `panic("msg")` supplies the custom message.
+
+## `@must` — Error Assertions
+
+Inline on a line containing an `error`-returning call. Replaces the last `_` with a generated variable, then asserts it is nil.
+
+```go
+user, _ := db.Query("SELECT ...") // @must
+```
+
+Generated:
+
+```go
+user, __inco_err := db.Query("SELECT ...")
+if __inco_err != nil {
+    panic(__inco_err)
+}
+```
+
+With a custom message (use `_` to reference the captured error):
+
+```go
+user, _ := db.Query("SELECT ...") // @must panic(fmt.Sprintf("query failed: %v", _))
+```
+
+Generated:
+
+```go
+user, __inco_err := db.Query("SELECT ...")
+if __inco_err != nil {
+    panic(fmt.Sprintf("query failed: %v", __inco_err))
+}
+```
+
+## `@ensure` — Boolean Assertions
+
+Inline on a line with a comma-ok pattern. Replaces the last `_` with a generated bool variable, then asserts it is true.
+
+```go
+v, _ := m[key] // @ensure panic("key not found: " + key)
+```
+
+Generated:
+
+```go
+v, __inco_ok := m[key]
+if !__inco_ok {
+    panic("key not found: " + key)
+}
+```
+
+## Generics
+
+Works with generic functions and types:
+
+```go
+func Clamp[N Number](val, lo, hi N) N {
+    // @require lo <= hi
+    if val < lo {
+        return lo
+    }
+    if val > hi {
+        return hi
+    }
+    return val
+}
+
+type Repository[T any] struct {
+    data map[string]T
+}
+
+func (r *Repository[T]) Get(id string) T {
+    v, _ := r.data[id] // @ensure panic("not found: " + id)
     return v
 }
 
-// Expression mode works with type params too
-func Clamp[N Number](val, lo, hi N) N {
-    // @require lo <= hi, "lo must not exceed hi"
-    ...
+func NewPair[K comparable, V any](key K, value V) Pair[K, V] {
+    // @require key != *new(K) panic("key must not be zero")
+    return Pair[K, V]{Key: key, Value: value}
 }
 ```
+
+## Auto-Import
+
+When directive arguments reference standard library packages (e.g. `fmt.Sprintf`, `errors.New`), Inco automatically adds the corresponding import to the shadow file via `astutil.AddImport`. No manual import management needed.
 
 ## Usage
 
@@ -189,7 +186,7 @@ func Clamp[N Number](val, lo, hi N) N {
 go install github.com/incognito-design/inco/cmd/inco@latest
 
 # Generate overlay
-inco gen
+inco gen [dir]
 
 # Build / Test / Run with contracts enforced
 inco build ./...
@@ -197,12 +194,13 @@ inco test ./...
 inco run .
 
 # Contract coverage audit
-inco audit .
+inco audit [dir]
+
+# Clean cache
+inco clean [dir]
 ```
 
-## Build from source
-
-Inco is self-bootstrapping — it uses its own contract directives in its source code.
+## Build from Source
 
 ```bash
 # Two-stage build:
@@ -216,41 +214,83 @@ make clean      # Remove .inco_cache/ and bin/
 make install    # Install to $GOPATH/bin
 ```
 
-## How it works
+## Audit
 
-1. `inco gen` scans all `.go` files for `@require`, `@ensure`, `@must` comments
-2. Type-checks each package via `go/types` for type-aware assertion generation
-3. Generates shadow files with injected assertions in `.inco_cache/`
-4. Injects `//line` directives so panic stack traces point back to original source lines
-5. Produces `overlay.json` for `go build -overlay`
-6. Source files remain untouched — zero invasion
+`inco audit` scans your codebase and reports:
 
-At gen time, constant `@require` expressions that evaluate to `false` are detected and warnings are emitted.
-
-## Project structure
+- **@require coverage**: percentage of functions guarded by at least one `@require`
+- **Directive vs if ratio**: total `@require` / `@must` / `@ensure` directives compared to native `if` statements
+- **Per-file breakdown**: directive and `if` counts per file
+- **Unguarded functions**: list of functions without any `@require`
 
 ```
-cmd/inco/           CLI entry point
+$ inco audit .
+inco audit — contract coverage report
+======================================
+
+  Files scanned:  10
+  Functions:      62
+
+@require coverage:
+  With @require:     10 / 62  (16.1%)
+  Without @require:  52 / 62  (83.9%)
+
+Directive vs if:
+  @require:           18
+  @must:              4
+  @ensure:            3
+  ─────────────────────
+  Total directives:   25
+  Native if stmts:    122
+  Directive/if ratio: 0.20
+
+Per-file breakdown:
+  File                        @require  @must  @ensure  if  funcs  guarded
+  ──────────────────────────  ────────  ─────  ───────  ──  ─────  ───────
+  example/demo.go                   5      1        0   0      4        3
+  example/edge_cases.go             6      1        1   0      5        3
+  internal/inco/engine.go           0      0        0  45     19        0
+  ...
+
+Functions without @require (46):
+  cmd/inco/main.go:24  main
+  internal/inco/engine.go:52  Engine.Run
+  ...
+```
+
+The goal: drive `@require` coverage up and the directive/if ratio toward 1.0+, meaning most defensive checks live in directives rather than manual `if` statements.
+
+## How It Works
+
+1. `inco gen` scans all `.go` files for `@require`, `@must`, `@ensure` comments
+2. Parses directives and generates shadow files with injected `if`/`panic` blocks in `.inco_cache/`
+3. Injects `//line` directives so panic stack traces point back to **original** source lines
+4. Produces `overlay.json` for `go build -overlay`
+5. Source files remain untouched — zero invasion
+
+## Project Structure
+
+```
+cmd/inco/           CLI: gen, build, test, run, audit, clean
 internal/inco/      Core engine:
   audit.go            Contract coverage auditing
-  contract.go         Directive parsing
-  engine.go           AST injection, overlay generation, //line mapping
-  typecheck.go        Type resolution, zero-value checks, generics support
+  directive.go        Directive parsing (@require, @must, @ensure)
+  engine.go           AST processing, code generation, overlay I/O
 example/            Demo files:
-  demo.go             Basic directives
-  transfer.go         Full directive set
-  edge_cases.go       Closures, multi-line @must, -ret/-ret(...)/-log, @must -ret
-  generics.go         Type parameters: comparable, any, mixed, expression mode
+  demo.go             @require + @must basics
+  transfer.go         Multiple @require, @must
+  edge_cases.go       Closures, custom panic, @ensure
+  generics.go         Type parameters, generic containers
 ```
 
 ## Design
 
-- **Zero-invasive**: No custom extensions, no broken IDE support
-- **Zero-overhead option**: Strip via `-tags` in production, or keep for fail-fast
-- **Self-bootstrapping**: Inco is built with Inco — its own source uses `@require` and `@must`
-- **Cache-friendly**: Content-hash based filenames for stable build cache
-- **Type-aware**: Full `go/types` integration — smart zero-value checks for all Go types including generics
-- **Source-mapped**: `//line` directives in shadow files preserve original file:line in stack traces
+- **Zero-invasive**: Plain Go comments — no custom syntax, no broken IDE support
+- **One action**: `panic` only — fail-fast by design
+- **Zero-overhead option**: Strip directives in production, or keep for fail-fast
+- **Cache-friendly**: Content-hash (SHA-256) based shadow filenames for stable build cache
+- **Source-mapped**: `//line` directives preserve original file:line in stack traces
+- **Auto-import**: Standard library references in directive args are auto-imported
 
 ## License
 

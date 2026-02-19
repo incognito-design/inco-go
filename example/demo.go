@@ -15,35 +15,29 @@ func (db *DB) Query(q string) (*User, error) {
 	return &User{Name: "test", Age: 25}, nil
 }
 
-// GetUser demonstrates @require -nd (non-defaulted precondition)
-func GetUser(u *User, db *DB) {
-	// @require -nd u, db
+// --- Case 1: Default action (panic) with expression ---
 
-	fmt.Println(u.Name)
-}
-
-// CreateUser demonstrates @require with expression
 func CreateUser(name string, age int) {
-	// @require len(name) > 0, "name must not be empty"
+	// @require len(name) > 0
 	// @require age > 0
 
 	fmt.Printf("Creating user: %s, age %d\n", name, age)
 }
 
-// FetchUser demonstrates @must (error must be nil)
-func FetchUser(db *DB) *User {
-	res, _ := db.Query("SELECT * FROM users") // @must
+// --- Case 2: Panic with custom message ---
 
-	fmt.Println("Fetched:", res.Name)
-	return res
+func GetUser(u *User) {
+	// @require u != nil panic("user must not be nil")
+
+	fmt.Println(u.Name)
 }
 
-// SafeProcess demonstrates @require -nd (precondition)
-func SafeProcess(id string) (result *User) {
-	// @require len(id) > 0, "id must not be empty"
+// --- Case 3: @must — error must not occur ---
 
-	if id == "valid" {
-		return &User{Name: "found"}
-	}
-	return nil // this will trigger the ensure violation!
+func FetchUser(db *DB, id string) (*User, error) {
+	// @require db != nil
+	// @require len(id) > 0 panic("empty id")
+
+	user, _ := db.Query("SELECT * FROM users WHERE id = ?") // @must
+	return user, nil
 }
