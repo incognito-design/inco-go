@@ -49,27 +49,18 @@ func NewEngine(root string) *Engine {
 
 // Run scans all Go source files under Root, processes @require directives,
 // and writes the overlay + shadow files into .inco_cache/.
-func (e *Engine) Run() error {
-	packages, err := e.scanPackages()
-	if err != nil {
-		return fmt.Errorf("scanning packages: %w", err)
-	}
-
+func (e *Engine) Run() {
+	packages := e.scanPackages()
 	for _, pkg := range packages {
-		if err := e.processPackage(pkg); err != nil {
-			return err
-		}
+		e.processPackage(pkg)
 	}
 
 	if len(e.Overlay.Replace) > 0 {
-		if err := e.writeOverlay(); err != nil {
-			return fmt.Errorf("writing overlay: %w", err)
-		}
+		e.writeOverlay()
 		fmt.Fprintf(os.Stderr, "inco: overlay written to %s (%d file(s) mapped)\n",
 			filepath.Join(e.Root, ".inco_cache", "overlay.json"),
 			len(e.Overlay.Replace))
 	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -84,13 +75,11 @@ type pkgBundle struct {
 
 // scanPackages walks Root, parses every non-test .go file, and groups them
 // by directory (= Go package).
-func (e *Engine) scanPackages() ([]*pkgBundle, error) {
+func (e *Engine) scanPackages() []*pkgBundle {
 	dirFiles := make(map[string]map[string]*ast.File)
 
-	err := filepath.WalkDir(e.Root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+	walkFn := func(path string, d os.DirEntry, err error) error {
+		// @require err == nil panic(err)
 		if d.IsDir() {
 			name := d.Name()
 			if strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" {
@@ -102,20 +91,15 @@ func (e *Engine) scanPackages() ([]*pkgBundle, error) {
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
 		}
-		f, parseErr := parser.ParseFile(e.fset, path, nil, parser.ParseComments)
-		if parseErr != nil {
-			return fmt.Errorf("parse %s: %w", path, parseErr)
-		}
+		f, _ := parser.ParseFile(e.fset, path, nil, parser.ParseComments) // @must
 		dir := filepath.Dir(path)
 		if dirFiles[dir] == nil {
 			dirFiles[dir] = make(map[string]*ast.File)
 		}
 		dirFiles[dir][path] = f
 		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
+	_ = filepath.WalkDir(e.Root, walkFn) // @must
 
 	// Sort directories for deterministic order.
 	dirs := make([]string, 0, len(dirFiles))
@@ -134,26 +118,22 @@ func (e *Engine) scanPackages() ([]*pkgBundle, error) {
 		sort.Strings(paths)
 		result = append(result, &pkgBundle{Dir: dir, Files: files, Paths: paths})
 	}
-	return result, nil
+	return result
 }
 
 // ---------------------------------------------------------------------------
 // Package & file processing
 // ---------------------------------------------------------------------------
 
-func (e *Engine) processPackage(pkg *pkgBundle) error {
+func (e *Engine) processPackage(pkg *pkgBundle) {
 	for _, path := range pkg.Paths {
-		f := pkg.Files[path]
-		if err := e.processFile(path, f); err != nil {
-			return fmt.Errorf("processing %s: %w", path, err)
-		}
+		e.processFile(path, pkg.Files[path])
 	}
-	return nil
 }
 
 // processFile scans a single source file for directives,
 // generates injected if-blocks via text replacement, and writes a shadow.
-func (e *Engine) processFile(path string, f *ast.File) error {
+func (e *Engine) processFile(path string, f *ast.File) {
 	// 1. Collect directive lines from AST comments.
 	directives := make(map[int]*Directive) // 1-based line → Directive
 	for _, cg := range f.Comments {
@@ -166,14 +146,11 @@ func (e *Engine) processFile(path string, f *ast.File) error {
 		}
 	}
 	if len(directives) == 0 {
-		return nil
+		return
 	}
 
 	// 2. Read source as lines.
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
+	src, _ := os.ReadFile(path) // @must
 	lines := strings.Split(string(src), "\n")
 
 	// 3. Classify directives: standalone (@require) vs inline (@must/@ensure).
@@ -200,13 +177,46 @@ func (e *Engine) processFile(path string, f *ast.File) error {
 		}
 	}
 	if len(standalone) == 0 && len(inline) == 0 {
-		return nil
+		return
+	}
+
+	// 3.5. Compute function scopes for per-scope variable tracking.
+	type funcScope struct{ startLine, endLine int }
+	var funcScopes []funcScope
+	ast.Inspect(f, func(n ast.Node) bool {
+		var body *ast.BlockStmt
+		switch fn := n.(type) {
+		case *ast.FuncDecl:
+			body = fn.Body
+		case *ast.FuncLit:
+			body = fn.Body
+		}
+		if body != nil {
+			funcScopes = append(funcScopes, funcScope{
+				startLine: e.fset.Position(body.Pos()).Line,
+				endLine:   e.fset.Position(body.End()).Line,
+			})
+		}
+		return true
+	})
+	scopeAt := func(lineNum int) int {
+		best := -1
+		for i, s := range funcScopes {
+			if lineNum >= s.startLine && lineNum <= s.endLine {
+				if best == -1 || s.startLine > funcScopes[best].startLine {
+					best = i
+				}
+			}
+		}
+		return best
 	}
 
 	// 4. Build output: replace/augment directive lines, add //line directives
 	//    to preserve source mapping.
 	var output []string
 	prevWasDirective := false
+	declared := make(map[string]bool) // tracks __inco_err/__inco_ok declarations
+	lastScope := -2                   // sentinel distinct from scopeAt's -1
 
 	for idx, line := range lines {
 		lineNum := idx + 1
@@ -218,9 +228,14 @@ func (e *Engine) processFile(path string, f *ast.File) error {
 			output = append(output, e.generateIfBlock(d, indent, path, lineNum))
 			prevWasDirective = true
 		} else if d, ok := inline[lineNum]; ok {
+			// Reset declared map when crossing function boundaries.
+			if scope := scopeAt(lineNum); scope != lastScope {
+				declared = make(map[string]bool)
+				lastScope = scope
+			}
 			// Inline @must/@ensure: rewrite code line + inject if-block after.
 			indent := extractIndent(line)
-			varName, rewritten := e.rewriteInlineLine(line, d)
+			varName, rewritten := e.rewriteInlineLine(line, d, declared)
 			output = append(output, fmt.Sprintf("%s//line %s:%d", indent, path, lineNum))
 			output = append(output, rewritten)
 			output = append(output, e.generateInlineIfBlock(d, indent, path, lineNum, varName))
@@ -240,7 +255,7 @@ func (e *Engine) processFile(path string, f *ast.File) error {
 	content = e.addMissingImports(content, f, directives)
 
 	// 6. Write shadow file.
-	return e.writeShadow(path, []byte(content))
+	e.writeShadow(path, []byte(content))
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +295,9 @@ func (e *Engine) buildPanicBody(d *Directive, path string, line int) string {
 
 // rewriteInlineLine strips the inline @must/@ensure comment and replaces the
 // last blank identifier (_) with a generated variable name.
-func (e *Engine) rewriteInlineLine(line string, d *Directive) (varName, rewritten string) {
+// If the blank was assigned with plain "=" and the variable hasn't been
+// declared yet in this scope, the assignment is promoted to ":=".
+func (e *Engine) rewriteInlineLine(line string, d *Directive, declared map[string]bool) (varName, rewritten string) {
 	keyword := "@must"
 	varName = "__inco_err"
 	if d.Kind == KindEnsure {
@@ -289,7 +306,39 @@ func (e *Engine) rewriteInlineLine(line string, d *Directive) (varName, rewritte
 	}
 	codePart := stripInlineComment(line, keyword)
 	rewritten = replaceLastBlank(codePart, varName)
+	// Promote "=" to ":=" only on first occurrence of this variable.
+	if !declared[varName] {
+		rewritten = promoteAssign(rewritten, varName)
+		declared[varName] = true
+	}
 	return
+}
+
+// promoteAssign ensures the assignment containing varName uses := instead of =.
+// Handles both "varName = expr" and "x, varName = expr" patterns:
+//   - "_ = foo()"             → "__inco_err = foo()"  → needs ":="
+//   - "v, _ = m[k]"           → "v, __inco_ok = m[k]" → needs ":="
+//   - "v, _ := m[k]"          → "v, __inco_ok := m[k]" → already ok
+func promoteAssign(code, varName string) string {
+	// Find the position of varName in the code.
+	idx := strings.Index(code, varName)
+	if idx < 0 {
+		return code
+	}
+	// Scan forward past varName and whitespace to find the assignment operator.
+	pos := idx + len(varName)
+	for pos < len(code) && (code[pos] == ' ' || code[pos] == '\t') {
+		pos++
+	}
+	// Check if we're at "=" (but not ":=" or "==").
+	if pos < len(code) && code[pos] == '=' {
+		if pos+1 >= len(code) || code[pos+1] != '=' { // not "=="
+			if pos == 0 || code[pos-1] != ':' { // not already ":="
+				return code[:pos] + ":" + code[pos:]
+			}
+		}
+	}
+	return code
 }
 
 // generateInlineIfBlock builds the if-block for an inline @must/@ensure.
@@ -480,11 +529,9 @@ func (e *Engine) addMissingImports(content string, origFile *ast.File, directive
 // Shadow & overlay I/O
 // ---------------------------------------------------------------------------
 
-func (e *Engine) writeShadow(origPath string, content []byte) error {
+func (e *Engine) writeShadow(origPath string, content []byte) {
 	cacheDir := filepath.Join(e.Root, ".inco_cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return err
-	}
+	_ = os.MkdirAll(cacheDir, 0o755) // @must
 
 	hash := sha256.Sum256(content)
 	shadowName := fmt.Sprintf("%s_%x.go",
@@ -492,23 +539,15 @@ func (e *Engine) writeShadow(origPath string, content []byte) error {
 		hash[:8])
 	shadowPath := filepath.Join(cacheDir, shadowName)
 
-	if err := os.WriteFile(shadowPath, content, 0o644); err != nil {
-		return err
-	}
+	_ = os.WriteFile(shadowPath, content, 0o644) // @must
 	e.Overlay.Replace[origPath] = shadowPath
-	return nil
 }
 
-func (e *Engine) writeOverlay() error {
+func (e *Engine) writeOverlay() {
 	cacheDir := filepath.Join(e.Root, ".inco_cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(e.Overlay, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(cacheDir, "overlay.json"), data, 0o644)
+	_ = os.MkdirAll(cacheDir, 0o755)                                       // @must
+	data, _ := json.MarshalIndent(e.Overlay, "", "  ")                     // @must
+	_ = os.WriteFile(filepath.Join(cacheDir, "overlay.json"), data, 0o644) // @must
 }
 
 // ---------------------------------------------------------------------------

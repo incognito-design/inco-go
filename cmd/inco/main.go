@@ -22,6 +22,8 @@ If [dir] is omitted, the current directory is used.
 `
 
 func main() {
+	defer guardPanic()
+
 	if len(os.Args) < 2 {
 		fmt.Print(usage)
 		os.Exit(0)
@@ -29,41 +31,34 @@ func main() {
 
 	switch os.Args[1] {
 	case "gen":
-		dir := getDir(2)
-		if err := runGen(dir); err != nil {
-			fatal(err)
-		}
+		runGen(getDir(2))
 	case "build":
-		if err := runGen("."); err != nil {
-			fatal(err)
-		}
+		runGen(".")
 		runGo("build", ".", os.Args[2:])
 	case "test":
-		if err := runGen("."); err != nil {
-			fatal(err)
-		}
+		runGen(".")
 		runGo("test", ".", os.Args[2:])
 	case "run":
-		if err := runGen("."); err != nil {
-			fatal(err)
-		}
+		runGen(".")
 		runGo("run", ".", os.Args[2:])
 	case "audit":
-		dir := getDir(2)
-		result, err := runAudit(dir)
-		if err != nil {
-			fatal(err)
-		}
-		result.PrintReport(os.Stdout)
+		runAudit(getDir(2)).PrintReport(os.Stdout)
 	case "clean":
 		dir := getDir(2)
-		if err := os.RemoveAll(filepath.Join(dir, ".inco_cache")); err != nil {
-			fatal(err)
-		}
+		_ = os.RemoveAll(filepath.Join(dir, ".inco_cache")) // @must
 		fmt.Println("inco: cache cleaned")
 	default:
 		fmt.Fprintf(os.Stderr, "inco: unknown command %q\n", os.Args[1])
 		fmt.Print(usage)
+		os.Exit(1)
+	}
+}
+
+// guardPanic recovers from panics (including those injected by @must)
+// and exits cleanly with the panic message.
+func guardPanic() {
+	if r := recover(); r != nil {
+		fmt.Fprintf(os.Stderr, "inco: %v\n", r)
 		os.Exit(1)
 	}
 }
@@ -75,19 +70,13 @@ func getDir(argIdx int) string {
 	return "."
 }
 
-func runGen(dir string) error {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	return inco.NewEngine(absDir).Run()
+func runGen(dir string) {
+	absDir, _ := filepath.Abs(dir) // @must
+	inco.NewEngine(absDir).Run()
 }
 
-func runAudit(dir string) (*inco.AuditResult, error) {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return nil, err
-	}
+func runAudit(dir string) *inco.AuditResult {
+	absDir, _ := filepath.Abs(dir) // @must
 	return inco.Audit(absDir)
 }
 
@@ -97,10 +86,7 @@ func runGo(subcmd, dir string, extraArgs []string) {
 		execGo(subcmd, extraArgs)
 		return
 	}
-	absOverlay, err := filepath.Abs(overlayPath)
-	if err != nil {
-		fatal(err)
-	}
+	absOverlay, _ := filepath.Abs(overlayPath) // @must
 	args := append([]string{fmt.Sprintf("-overlay=%s", absOverlay)}, extraArgs...)
 	execGo(subcmd, args)
 }
@@ -113,9 +99,4 @@ func execGo(subcmd string, args []string) {
 	if err := cmd.Run(); err != nil {
 		os.Exit(1)
 	}
-}
-
-func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "inco: %v\n", err)
-	os.Exit(1)
 }

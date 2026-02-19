@@ -53,19 +53,14 @@ type AuditResult struct {
 
 // Audit scans all Go source files under root and produces an AuditResult
 // summarising @require coverage and directive-vs-if ratios.
-func Audit(root string) (*AuditResult, error) {
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
+func Audit(root string) *AuditResult {
+	absRoot, _ := filepath.Abs(root) // @must
 
 	fset := token.NewFileSet()
 	var files []FileAudit
 
-	err = filepath.WalkDir(absRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+	walkFn := func(path string, d os.DirEntry, err error) error {
+		// @require err == nil panic(err)
 		if d.IsDir() {
 			name := d.Name()
 			if strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" {
@@ -78,16 +73,11 @@ func Audit(root string) (*AuditResult, error) {
 			return nil
 		}
 
-		fa, parseErr := auditFile(fset, absRoot, path)
-		if parseErr != nil {
-			return parseErr
-		}
+		fa := auditFile(fset, absRoot, path)
 		files = append(files, fa)
 		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
+	_ = filepath.WalkDir(absRoot, walkFn) // @must
 
 	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 
@@ -105,18 +95,15 @@ func Audit(root string) (*AuditResult, error) {
 		}
 	}
 	r.TotalDirectives = r.TotalRequires + r.TotalMusts + r.TotalEnsures
-	return r, nil
+	return r
 }
 
 // ---------------------------------------------------------------------------
 // Per-file analysis
 // ---------------------------------------------------------------------------
 
-func auditFile(fset *token.FileSet, root, path string) (FileAudit, error) {
-	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-	if err != nil {
-		return FileAudit{}, fmt.Errorf("parse %s: %w", path, err)
-	}
+func auditFile(fset *token.FileSet, root, path string) FileAudit {
+	f, _ := parser.ParseFile(fset, path, nil, parser.ParseComments) // @must
 
 	relPath := path
 	if rel, e := filepath.Rel(root, path); e == nil {
@@ -126,10 +113,7 @@ func auditFile(fset *token.FileSet, root, path string) (FileAudit, error) {
 	fa := FileAudit{Path: path, RelPath: relPath}
 
 	// Read source lines once for classification.
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return FileAudit{}, err
-	}
+	src, _ := os.ReadFile(path) // @must
 	srcLines := strings.Split(string(src), "\n")
 
 	// 1. Parse directives from comments.
@@ -244,7 +228,7 @@ func auditFile(fset *token.FileSet, root, path string) (FileAudit, error) {
 		})
 	}
 
-	return fa, nil
+	return fa
 }
 
 // recvTypeName extracts the type name from a method receiver expression.

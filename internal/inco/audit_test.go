@@ -46,10 +46,7 @@ func UseEnsure() {
 }
 `)
 
-	result, err := Audit(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := Audit(dir)
 
 	// Totals.
 	if result.TotalFiles != 1 {
@@ -100,10 +97,7 @@ func C(z int) {
 }
 `)
 
-	result, err := Audit(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := Audit(dir)
 
 	if result.TotalFiles != 2 {
 		t.Errorf("TotalFiles = %d, want 2", result.TotalFiles)
@@ -148,10 +142,7 @@ func Y(b int) {
 }
 `)
 
-	result, err := Audit(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := Audit(dir)
 
 	if result.TotalFiles != 1 {
 		t.Errorf("TotalFiles = %d, want 1", result.TotalFiles)
@@ -175,10 +166,7 @@ func Outer() {
 }
 `)
 
-	result, err := Audit(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := Audit(dir)
 
 	if result.TotalFuncs != 2 { // Outer + func literal
 		t.Errorf("TotalFuncs = %d, want 2", result.TotalFuncs)
@@ -196,10 +184,7 @@ func TestAudit_EmptyProject(t *testing.T) {
 func main() {}
 `)
 
-	result, err := Audit(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := Audit(dir)
 
 	if result.TotalFuncs != 1 {
 		t.Errorf("TotalFuncs = %d, want 1", result.TotalFuncs)
@@ -224,10 +209,7 @@ func (s *Svc) Do(x int) {
 }
 `)
 
-	result, err := Audit(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := Audit(dir)
 
 	if result.TotalFuncs != 1 {
 		t.Errorf("TotalFuncs = %d, want 1", result.TotalFuncs)

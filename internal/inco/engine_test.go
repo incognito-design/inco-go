@@ -45,9 +45,7 @@ func TestEngine_NoDirectives(t *testing.T) {
 		"main.go": "package main\n\nfunc main() {}\n",
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	if len(e.Overlay.Replace) != 0 {
 		t.Errorf("expected 0 overlay entries, got %d", len(e.Overlay.Replace))
 	}
@@ -68,9 +66,7 @@ func Greet(name string) {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, "!(len(name) > 0)") {
 		t.Errorf("shadow should contain negated condition, got:\n%s", shadow)
@@ -98,9 +94,7 @@ func Process(x int) {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, `panic("x must be positive")`) {
 		t.Errorf("shadow should contain custom panic message, got:\n%s", shadow)
@@ -123,9 +117,7 @@ func Process(name string, age int) {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, "!(len(name) > 0)") {
 		t.Error("missing first condition")
@@ -156,9 +148,7 @@ func Hello(name string) {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, "//line") {
 		t.Error("shadow should contain //line directives")
@@ -178,9 +168,7 @@ func Do(x int) {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 
 	overlayPath := filepath.Join(dir, ".inco_cache", "overlay.json")
 	data, err := os.ReadFile(overlayPath)
@@ -215,9 +203,7 @@ func X(x int) {
 		"main.go": "package main\n\nfunc main() {}\n",
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	if len(e.Overlay.Replace) != 0 {
 		t.Errorf("should skip hidden dirs, got %d", len(e.Overlay.Replace))
 	}
@@ -237,18 +223,14 @@ func Do(x int) {
 	})
 
 	e1 := NewEngine(dir)
-	if err := e1.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e1.Run()
 	var p1 string
 	for _, p := range e1.Overlay.Replace {
 		p1 = p
 	}
 
 	e2 := NewEngine(dir)
-	if err := e2.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e2.Run()
 	var p2 string
 	for _, p := range e2.Overlay.Replace {
 		p2 = p
@@ -277,9 +259,7 @@ func Outer() {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, "!(x > 0)") {
 		t.Error("should process directives inside closures")
@@ -303,9 +283,7 @@ func Run() {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	// _ should be replaced with __inco_err
 	if !strings.Contains(shadow, "__inco_err") {
@@ -338,9 +316,7 @@ func SafeRun() {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, "panic(__inco_err)") {
 		t.Errorf("should contain panic, got:\n%s", shadow)
@@ -359,9 +335,7 @@ func Fetch() {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	// _ in action args should be replaced with __inco_err
 	if !strings.Contains(shadow, `panic(fmt.Sprintf("failed: %v", __inco_err))`) {
@@ -382,9 +356,7 @@ func Run() {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, `panic("print failed")`) {
 		t.Errorf("should contain custom panic message, got:\n%s", shadow)
@@ -407,9 +379,7 @@ func Run() {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, "__inco_ok") {
 		t.Errorf("should contain __inco_ok, got:\n%s", shadow)
@@ -434,14 +404,41 @@ func Run() {
 `,
 	})
 	e := NewEngine(dir)
-	if err := e.Run(); err != nil {
-		t.Fatal(err)
-	}
+	e.Run()
 	shadow := readShadow(t, e)
 	if !strings.Contains(shadow, "__inco_ok") {
 		t.Errorf("should contain __inco_ok, got:\n%s", shadow)
 	}
 	if !strings.Contains(shadow, `panic("key not found")`) {
 		t.Errorf("should contain custom panic msg, got:\n%s", shadow)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cross-function @must scope tracking
+// ---------------------------------------------------------------------------
+
+func TestEngine_Must_MultipleFunctions(t *testing.T) {
+	dir := setupDir(t, map[string]string{
+		"main.go": `package main
+
+import "os"
+
+func First() {
+	_ = os.MkdirAll("/tmp/inco_test_1", 0o755) // @must
+}
+
+func Second() {
+	_ = os.MkdirAll("/tmp/inco_test_2", 0o755) // @must
+}
+`,
+	})
+	e := NewEngine(dir)
+	e.Run()
+	shadow := readShadow(t, e)
+	// Both functions should have := declarations (scope reset).
+	count := strings.Count(shadow, "__inco_err :=")
+	if count != 2 {
+		t.Errorf("expected 2 ':=' declarations across functions, got %d\n%s", count, shadow)
 	}
 }
