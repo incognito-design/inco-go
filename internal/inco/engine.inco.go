@@ -153,9 +153,7 @@ func (e *Engine) processFile(path string, f *ast.File) {
 	stmtLines := collectStmtLines(f, e.fset)
 	for lineNum, d := range directives {
 		idx := lineNum - 1
-		if idx < 0 || idx >= len(lines) {
-			continue
-		}
+		// @inco: idx >= 0 && idx < len(lines), -continue
 		trimmed := strings.TrimSpace(lines[idx])
 		isCommentLine := strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*")
 		if isCommentLine {
@@ -415,9 +413,7 @@ func extractIndent(line string) string {
 func collectStmtLines(f *ast.File, fset *token.FileSet) map[int]bool {
 	lines := make(map[int]bool)
 	ast.Inspect(f, func(n ast.Node) bool {
-		if n == nil {
-			return false
-		}
+		// @inco: n != nil, -return(false)
 		switch n.(type) {
 		case *ast.AssignStmt, *ast.ExprStmt, *ast.ReturnStmt,
 			*ast.IncDecStmt, *ast.SendStmt, *ast.GoStmt, *ast.DeferStmt,

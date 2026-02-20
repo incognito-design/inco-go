@@ -29,18 +29,14 @@ type ignorePattern struct {
 // Returns nil if the file does not exist or contains no patterns.
 func LoadIgnore(dir string) *IgnoreList {
 	f, err := os.Open(filepath.Join(dir, ".incoignore"))
-	if err != nil {
-		return nil
-	}
+	_ = err // @inco: err == nil, -return(nil)
 	defer f.Close()
 
 	var patterns []ignorePattern
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
+		// @inco: line != "" && !strings.HasPrefix(line, "#"), -continue
 		dirOnly := strings.HasSuffix(line, "/")
 		if dirOnly {
 			line = strings.TrimSuffix(line, "/")
@@ -51,9 +47,7 @@ func LoadIgnore(dir string) *IgnoreList {
 			hasSlash: strings.Contains(line, "/"),
 		})
 	}
-	if len(patterns) == 0 {
-		return nil
-	}
+	// @inco: len(patterns) > 0, -return(nil)
 	return &IgnoreList{patterns: patterns}
 }
 
@@ -61,14 +55,10 @@ func LoadIgnore(dir string) *IgnoreList {
 // relPath must be relative to the directory containing .incoignore.
 // isDir is true when relPath refers to a directory.
 func (ig *IgnoreList) Match(relPath string, isDir bool) bool {
-	if ig == nil {
-		return false
-	}
+	// @inco: ig != nil, -return(false)
 	base := filepath.Base(relPath)
 	for _, p := range ig.patterns {
-		if p.dirOnly && !isDir {
-			continue
-		}
+		// @inco: !p.dirOnly || isDir, -continue
 		if p.hasSlash {
 			// Pattern contains /: match against full relative path.
 			if matched, _ := filepath.Match(p.pattern, relPath); matched {
@@ -134,9 +124,7 @@ func (t *IgnoreTree) EnterDir(dir string) {
 func (t *IgnoreTree) LeaveDir(dir string) {
 	for len(t.layers) > 1 {
 		top := t.layers[len(t.layers)-1].dir
-		if top == dir || strings.HasPrefix(dir, top+string(filepath.Separator)) {
-			break
-		}
+		_ = top // @inco: top != dir && !strings.HasPrefix(dir, top+string(filepath.Separator)), -break
 		t.layers = t.layers[:len(t.layers)-1]
 	}
 }
@@ -145,14 +133,10 @@ func (t *IgnoreTree) LeaveDir(dir string) {
 // It checks all layers from root to the current directory.
 func (t *IgnoreTree) Match(absPath string, isDir bool) bool {
 	for _, layer := range t.layers {
-		if layer.ig == nil {
-			continue
-		}
+		// @inco: layer.ig != nil, -continue
 		// Compute relPath relative to this layer's directory.
 		rel, err := filepath.Rel(layer.dir, absPath)
-		if err != nil || rel == "." {
-			continue
-		}
+		_ = err // @inco: err == nil && rel != ".", -continue
 		if layer.ig.Match(rel, isDir) {
 			return true
 		}

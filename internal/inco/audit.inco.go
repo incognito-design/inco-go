@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -34,6 +35,7 @@ type FileAudit struct {
 // AuditResult is the aggregate report.
 type AuditResult struct {
 	Files           []FileAudit
+	IgnoredPaths    []string // files/dirs skipped by .incoignore
 	TotalFiles      int
 	TotalFuncs      int
 	GuardedFuncs    int // functions with >= 1 @inco: directive
@@ -55,6 +57,7 @@ func Audit(root string) *AuditResult {
 
 	fset := token.NewFileSet()
 	var files []FileAudit
+	var ignored []string
 
 	walkGoFiles(absRoot, func(path string) error {
 		fa := auditFile(fset, absRoot, path)
@@ -62,9 +65,12 @@ func Audit(root string) *AuditResult {
 		return nil
 	})
 
+	// Collect ignored paths by walking all .go files and checking .incoignore.
+	collectIgnored(absRoot, &ignored)
+
 	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 
-	r := &AuditResult{Files: files, TotalFiles: len(files)}
+	r := &AuditResult{Files: files, IgnoredPaths: ignored, TotalFiles: len(files)}
 	for _, f := range files {
 		r.TotalIfs += f.IfCount
 		r.TotalRequires += f.RequireCount
@@ -82,6 +88,42 @@ func Audit(root string) *AuditResult {
 // ---------------------------------------------------------------------------
 // Per-file analysis
 // ---------------------------------------------------------------------------
+
+// collectIgnored walks root and appends relative paths of files/dirs
+// that are skipped by .incoignore (but not by skipDirRe, which covers
+// hidden dirs, vendor, testdata — those are always skipped).
+func collectIgnored(root string, out *[]string) {
+	ig := NewIgnoreTree(root)
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if skipDirRe.MatchString(name) {
+				return filepath.SkipDir
+			}
+			ig.LeaveDir(path)
+			ig.EnterDir(path)
+			if ig.Match(path, true) {
+				rel, _ := filepath.Rel(root, path)
+				*out = append(*out, rel+"/")
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !goSourceRe.MatchString(name) || testFileRe.MatchString(name) {
+			return nil
+		}
+		if ig.Match(path, false) {
+			rel, _ := filepath.Rel(root, path)
+			*out = append(*out, rel)
+		}
+		return nil
+	})
+	sort.Strings(*out)
+}
 
 func auditFile(fset *token.FileSet, root, path string) FileAudit {
 	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
@@ -278,6 +320,14 @@ func (r *AuditResult) PrintReport(w io.Writer) {
 		fmt.Fprintf(w, "\nFunctions without @inco: (%d):\n", len(unguarded))
 		for _, s := range unguarded {
 			fmt.Fprintln(w, s)
+		}
+	}
+
+	// --- Ignored paths ---
+	if len(r.IgnoredPaths) > 0 {
+		fmt.Fprintf(w, "\nIgnored by .incoignore (%d):\n", len(r.IgnoredPaths))
+		for _, p := range r.IgnoredPaths {
+			fmt.Fprintf(w, "  %s\n", p)
 		}
 	}
 }

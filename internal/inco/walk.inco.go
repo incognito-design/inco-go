@@ -25,17 +25,11 @@ func walkGoFiles(root string, fn func(path string) error) error {
 			// Sync the ignore tree to the current position.
 			ig.LeaveDir(path)
 			ig.EnterDir(path)
-			if ig.Match(path, true) {
-				return filepath.SkipDir
-			}
+			// @inco: !ig.Match(path, true), -return(filepath.SkipDir)
 			return nil
 		}
-		if !goSourceRe.MatchString(d.Name()) || testFileRe.MatchString(d.Name()) {
-			return nil
-		}
-		if ig.Match(path, false) {
-			return nil
-		}
+		// @inco: goSourceRe.MatchString(d.Name()) && !testFileRe.MatchString(d.Name()), -return(nil)
+		// @inco: !ig.Match(path, false), -return(nil)
 		return fn(path)
 	})
 }

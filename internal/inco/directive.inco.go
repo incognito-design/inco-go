@@ -39,14 +39,10 @@ var actionFromName = map[string]ActionKind{
 // Syntax: @inco: <expr>[, -action[(args...)]]
 func ParseDirective(comment string) *Directive {
 	body := stripComment(comment)
-	if body == "" {
-		return nil
-	}
+	// @inco: body != "", -return(nil)
 
 	m := directiveRe.FindStringSubmatch(body)
-	if m == nil {
-		return nil
-	}
+	// @inco: m != nil, -return(nil)
 	rest := m[1]
 
 	d := &Directive{Action: ActionPanic}
@@ -60,9 +56,7 @@ func ParseDirective(comment string) *Directive {
 		d.Expr = rest
 	}
 
-	if d.Expr == "" {
-		return nil
-	}
+	// @inco: d.Expr != "", -return(nil)
 	return d
 }
 
@@ -74,9 +68,7 @@ func ParseDirective(comment string) *Directive {
 func stripComment(s string) string {
 	s = strings.TrimSpace(s)
 	m := commentRe.FindStringSubmatch(s)
-	if m == nil {
-		return ""
-	}
+	// @inco: m != nil, -return("")
 	// m[1] is // content, m[2] is /* */ content; one will be empty.
 	if m[1] != "" {
 		return m[1]
