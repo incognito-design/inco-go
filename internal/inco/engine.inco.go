@@ -80,9 +80,8 @@ func (e *Engine) scanPackages() []*pkgBundle {
 		// @inco: err == nil, -panic(err)
 		if d.IsDir() {
 			name := d.Name()
-			if strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" {
-				return filepath.SkipDir
-			}
+			skip := strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata"
+			_ = skip // @inco: !skip, -return(filepath.SkipDir)
 			return nil
 		}
 		name := d.Name()
@@ -90,9 +89,7 @@ func (e *Engine) scanPackages() []*pkgBundle {
 			return nil
 		}
 		f, err := parser.ParseFile(e.fset, path, nil, parser.ParseComments)
-		if err != nil {
-			panic(err)
-		}
+		_ = err // @inco: err == nil, -panic(err)
 		dir := filepath.Dir(path)
 		if dirFiles[dir] == nil {
 			dirFiles[dir] = make(map[string]*ast.File)
@@ -100,9 +97,8 @@ func (e *Engine) scanPackages() []*pkgBundle {
 		dirFiles[dir][path] = f
 		return nil
 	}
-	if err := filepath.WalkDir(e.Root, walkFn); err != nil {
-		panic(err)
-	}
+	err := filepath.WalkDir(e.Root, walkFn)
+	_ = err // @inco: err == nil, -panic(err)
 
 	// Sort directories for deterministic order.
 	dirs := make([]string, 0, len(dirFiles))
@@ -154,23 +150,26 @@ func (e *Engine) processFile(path string, f *ast.File) {
 
 	// 2. Read source as lines.
 	src, err := os.ReadFile(path)
-	if err != nil {
-		panic(err)
-	}
+	_ = err // @inco: err == nil, -panic(err)
 	lines := strings.Split(string(src), "\n")
 
-	// 3. Collect standalone @inco: directives.
-	standalone := make(map[int]*Directive)
+	// 3. Classify directives as standalone or inline.
+	standalone := make(map[int]*Directive) // entire line is a comment
+	inline := make(map[int]*Directive)     // code with trailing @inco: comment
 
 	for lineNum, d := range directives {
 		idx := lineNum - 1
-		if idx < 0 || idx >= len(lines) {
-			continue
-		}
+		// @inco: idx >= 0 && idx < len(lines), -continue
 		trimmed := strings.TrimSpace(lines[idx])
 		isStandaloneLine := strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*")
 		if isStandaloneLine {
 			standalone[lineNum] = d
+		} else if atIdx := strings.Index(trimmed, "// @inco:"); atIdx > 0 {
+			// Inline directive: only if the code part is a blank-identifier use (_ =).
+			codePart := strings.TrimSpace(trimmed[:atIdx])
+			if strings.HasPrefix(codePart, "_ =") {
+				inline[lineNum] = d
+			}
 		}
 	}
 
@@ -186,6 +185,12 @@ func (e *Engine) processFile(path string, f *ast.File) {
 			// Standalone @inco:: replace comment line with if-block.
 			indent := extractIndent(line)
 			output = append(output, fmt.Sprintf("%s//line %s:%d", indent, path, lineNum))
+			output = append(output, e.generateIfBlock(d, indent, path, lineNum))
+			prevWasDirective = true
+		} else if d, ok := inline[lineNum]; ok {
+			// Inline @inco:: keep code line, inject if-block after.
+			output = append(output, line)
+			indent := extractIndent(line)
 			output = append(output, e.generateIfBlock(d, indent, path, lineNum))
 			prevWasDirective = true
 		} else {
@@ -303,9 +308,7 @@ func (e *Engine) addMissingImports(content string, origFile *ast.File, directive
 			}
 		}
 	}
-	if len(needed) == 0 {
-		return content
-	}
+	// @inco: len(needed) > 0, -return(content)
 
 	// 2. Determine which packages are already imported.
 	imported := make(map[string]bool)
@@ -325,33 +328,25 @@ func (e *Engine) addMissingImports(content string, origFile *ast.File, directive
 	// 3. Find which needed packages are missing.
 	var toAdd []string
 	for pkg := range needed {
-		if imported[pkg] {
-			continue
-		}
+		// @inco: !imported[pkg], -continue
 		if _, ok := stdlibPackages[pkg]; ok {
 			toAdd = append(toAdd, pkg)
 		}
 	}
-	if len(toAdd) == 0 {
-		return content
-	}
+	// @inco: len(toAdd) > 0, -return(content)
 
 	// 4. Re-parse the shadow content and add imports via astutil.
 	fset := token.NewFileSet()
 	shadowAST, err := parser.ParseFile(fset, "", content, parser.ParseComments)
-	if err != nil {
-		// If parsing fails, return content as-is.
-		return content
-	}
+	_ = err // @inco: err == nil, -return(content)
 	for _, pkg := range toAdd {
 		astutil.AddImport(fset, shadowAST, stdlibPackages[pkg])
 	}
 
 	// 5. Re-render.
 	var buf strings.Builder
-	if err := format.Node(&buf, fset, shadowAST); err != nil {
-		return content
-	}
+	err = format.Node(&buf, fset, shadowAST)
+	_ = err // @inco: err == nil, -return(content)
 	return buf.String()
 }
 
@@ -361,9 +356,8 @@ func (e *Engine) addMissingImports(content string, origFile *ast.File, directive
 
 func (e *Engine) writeShadow(origPath string, content []byte) {
 	cacheDir := filepath.Join(e.Root, ".inco_cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		panic(err)
-	}
+	err := os.MkdirAll(cacheDir, 0o755)
+	_ = err // @inco: err == nil, -panic(err)
 
 	hash := sha256.Sum256(content)
 	shadowName := fmt.Sprintf("%s_%x.go",
@@ -371,24 +365,19 @@ func (e *Engine) writeShadow(origPath string, content []byte) {
 		hash[:8])
 	shadowPath := filepath.Join(cacheDir, shadowName)
 
-	if err := os.WriteFile(shadowPath, content, 0o644); err != nil {
-		panic(err)
-	}
+	err = os.WriteFile(shadowPath, content, 0o644)
+	_ = err // @inco: err == nil, -panic(err)
 	e.Overlay.Replace[origPath] = shadowPath
 }
 
 func (e *Engine) writeOverlay() {
 	cacheDir := filepath.Join(e.Root, ".inco_cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		panic(err)
-	}
+	err := os.MkdirAll(cacheDir, 0o755)
+	_ = err // @inco: err == nil, -panic(err)
 	data, err := json.MarshalIndent(e.Overlay, "", "  ")
-	if err != nil {
-		panic(err)
-	}
-	if err := os.WriteFile(filepath.Join(cacheDir, "overlay.json"), data, 0o644); err != nil {
-		panic(err)
-	}
+	_ = err // @inco: err == nil, -panic(err)
+	err = os.WriteFile(filepath.Join(cacheDir, "overlay.json"), data, 0o644)
+	_ = err // @inco: err == nil, -panic(err)
 }
 
 // ---------------------------------------------------------------------------

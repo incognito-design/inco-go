@@ -2,43 +2,60 @@
 
 .PHONY: bootstrap gen build test run clean install
 
-BOOTSTRAP_BIN := bin/inco-bootstrap
 INCO_BIN      := bin/inco
 
-# --- Stage 0: Bootstrap (plain go build, no contracts) ---
+# Require inco to be installed: go install github.com/incognito-design/inco-go/cmd/inco@latest
+INCO := $(shell command -v inco 2>/dev/null)
+
+# --- Bootstrap (plain go build → self-host, for when PATH inco is outdated) ---
 bootstrap:
-	@echo "inco: stage 0 — building bootstrap binary (no contracts)..."
+	@echo "inco: bootstrapping (plain go build → self-host)..."
 	@mkdir -p bin
-	@go build -o $(BOOTSTRAP_BIN) ./cmd/inco
-	@echo "inco: bootstrap binary ready at $(BOOTSTRAP_BIN)"
+	@go build -o bin/inco-bootstrap ./cmd/inco
+	@bin/inco-bootstrap build -o $(INCO_BIN) ./cmd/inco
+	@rm -f bin/inco-bootstrap
+	@echo "inco: bootstrap complete — self-hosted binary ready at $(INCO_BIN)"
 
-# --- Stage 1: Self-host (use bootstrap to build with contracts) ---
+# --- Generate overlay from contract directives ---
+gen:
+ifndef INCO
+	$(error "inco not found in PATH. Run 'make bootstrap' or install with: go install github.com/incognito-design/inco-go/cmd/inco@latest")
+endif
+	@inco gen .
 
-# Generate overlay from contract directives (using bootstrap)
-gen: bootstrap
-	@$(BOOTSTRAP_BIN) gen .
-
-# Build with overlay (bootstrap generates overlay, then compiles with it)
-build: bootstrap
-	@$(BOOTSTRAP_BIN) gen .
-	@$(BOOTSTRAP_BIN) build -o $(INCO_BIN) ./cmd/inco
+# --- Build with overlay (self-hosted) ---
+build:
+ifndef INCO
+	$(error "inco not found in PATH. Run 'make bootstrap' first")
+endif
+	@inco gen .
+	@inco build -o $(INCO_BIN) ./cmd/inco
 	@echo "inco: self-hosted binary ready at $(INCO_BIN)"
 
-# Test with overlay
-test: bootstrap
-	@$(BOOTSTRAP_BIN) test ./...
+# --- Test with overlay ---
+test:
+ifndef INCO
+	$(error "inco not found in PATH. Run 'make bootstrap' first")
+endif
+	@inco test ./...
 
-# Run with overlay
-run: bootstrap
-	@$(BOOTSTRAP_BIN) run .
+# --- Run with overlay ---
+run:
+ifndef INCO
+	$(error "inco not found in PATH. Run 'make bootstrap' first")
+endif
+	@inco run .
 
-# Clean cache and binaries
+# --- Clean cache and binaries ---
 clean:
 	@rm -rf .inco_cache bin/
 
-# Install: bootstrap -> self-host -> install
-install: bootstrap
-	@$(BOOTSTRAP_BIN) gen .
+# --- Install: build self-hosted binary to GOPATH/bin ---
+install:
+ifndef INCO
+	$(error "inco not found in PATH. Run 'make bootstrap' first")
+endif
+	@inco gen .
 	@go build -overlay .inco_cache/overlay.json -o $(GOPATH)/bin/inco ./cmd/inco 2>/dev/null || \
 		go install ./cmd/inco
 	@echo "inco: installed to GOPATH/bin"

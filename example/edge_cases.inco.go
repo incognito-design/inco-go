@@ -56,7 +56,7 @@ func PrintPositive(nums []int) {
 
 func FindFirst(nums []int, target int) int {
 	for i, n := range nums {
-		// @inco: n != target, -break
+		_ = n // @inco: n != target, -break
 		_ = i
 	}
 	return -1

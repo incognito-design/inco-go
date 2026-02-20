@@ -52,9 +52,7 @@ type AuditResult struct {
 func Audit(root string) *AuditResult {
 	// @inco: root != "", -panic("Audit: root must not be empty")
 	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		panic(err)
-	}
+	_ = err // @inco: err == nil, -panic(err)
 
 	fset := token.NewFileSet()
 	var files []FileAudit
@@ -63,23 +61,20 @@ func Audit(root string) *AuditResult {
 		// @inco: err == nil, -panic(err)
 		if d.IsDir() {
 			name := d.Name()
-			if strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" {
-				return filepath.SkipDir
-			}
+			skip := strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata"
+			_ = skip // @inco: !skip, -return(filepath.SkipDir)
 			return nil
 		}
 		name := d.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			return nil
-		}
+		notGoSource := !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go")
+		_ = notGoSource // @inco: !notGoSource, -return(nil)
 
 		fa := auditFile(fset, absRoot, path)
 		files = append(files, fa)
 		return nil
 	}
-	if err := filepath.WalkDir(absRoot, walkFn); err != nil {
-		panic(err)
-	}
+	err = filepath.WalkDir(absRoot, walkFn)
+	_ = err // @inco: err == nil, -panic(err)
 
 	sort.Slice(files, func(i, j int) bool { return files[i].RelPath < files[j].RelPath })
 
@@ -104,9 +99,7 @@ func Audit(root string) *AuditResult {
 
 func auditFile(fset *token.FileSet, root, path string) FileAudit {
 	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-	if err != nil {
-		panic(err)
-	}
+	_ = err // @inco: err == nil, -panic(err)
 
 	relPath := path
 	if rel, e := filepath.Rel(root, path); e == nil {
@@ -115,14 +108,7 @@ func auditFile(fset *token.FileSet, root, path string) FileAudit {
 
 	fa := FileAudit{Path: path, RelPath: relPath}
 
-	// Read source lines once for classification.
-	src, err := os.ReadFile(path)
-	if err != nil {
-		panic(err)
-	}
-	srcLines := strings.Split(string(src), "\n")
-
-	// 1. Parse directives from comments (only standalone @inco:).
+	// 1. Parse directives from comments.
 	type directiveInfo struct {
 		pos token.Pos
 	}
@@ -131,19 +117,9 @@ func auditFile(fset *token.FileSet, root, path string) FileAudit {
 	for _, cg := range f.Comments {
 		for _, c := range cg.List {
 			d := ParseDirective(c.Text)
-			if d == nil {
-				continue
-			}
-			line := fset.Position(c.Pos()).Line
-			if line < 1 || line > len(srcLines) {
-				continue
-			}
-			trimmed := strings.TrimSpace(srcLines[line-1])
-			isStandalone := strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*")
-			if isStandalone {
-				fa.RequireCount++
-				directives = append(directives, directiveInfo{pos: c.Pos()})
-			}
+			_ = d // @inco: d != nil, -continue
+			fa.RequireCount++
+			directives = append(directives, directiveInfo{pos: c.Pos()})
 		}
 	}
 

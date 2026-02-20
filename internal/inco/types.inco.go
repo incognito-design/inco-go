@@ -11,8 +11,6 @@
 // The default action is -panic with an auto-generated message.
 package inco
 
-import "fmt"
-
 // ---------------------------------------------------------------------------
 // Action
 // ---------------------------------------------------------------------------
@@ -59,24 +57,4 @@ type Directive struct {
 // Overlay is the JSON structure consumed by `go build -overlay`.
 type Overlay struct {
 	Replace map[string]string `json:"Replace"`
-}
-
-// ---------------------------------------------------------------------------
-// Recover helper
-// ---------------------------------------------------------------------------
-
-// Recover converts a panic (from @inco: violations) into an error.
-// Call it via defer:
-//
-//	var err error
-//	defer inco.Recover(&err)
-//	inco.NewEngine(dir).Run()
-func Recover(errp *error) {
-	if r := recover(); r != nil {
-		if e, ok := r.(error); ok {
-			*errp = e
-		} else {
-			*errp = fmt.Errorf("%v", r)
-		}
-	}
 }

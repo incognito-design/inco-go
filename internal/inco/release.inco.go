@@ -30,27 +30,21 @@ func Release(root string) {
 
 	var released int
 	for origPath, shadowPath := range ov.Replace {
-		if !strings.HasSuffix(origPath, ".inco.go") {
-			continue
-		}
+		// @inco: strings.HasSuffix(origPath, ".inco.go"), -continue
 
 		// 1. Read shadow content.
 		shadowContent, err := os.ReadFile(shadowPath)
-		if err != nil {
-			panic(err)
-		}
+		_ = err // @inco: err == nil, -panic(err)
 
 		// 2. Write <base>.go alongside the original.
 		releasePath := releasePathFor(origPath)
-		if err := os.WriteFile(releasePath, []byte(releaseHeader+string(shadowContent)), 0o644); err != nil {
-			panic(err)
-		}
+		err = os.WriteFile(releasePath, []byte(releaseHeader+string(shadowContent)), 0o644)
+		_ = err // @inco: err == nil, -panic(err)
 
 		// 3. Rename foo.inco.go → foo.inco (backup).
 		backupPath := backupPathFor(origPath)
-		if err := os.Rename(origPath, backupPath); err != nil {
-			panic(err)
-		}
+		err = os.Rename(origPath, backupPath)
+		_ = err // @inco: err == nil, -panic(err)
 
 		rel, _ := filepath.Rel(root, releasePath)
 		fmt.Fprintf(os.Stderr, "  %s\n", rel)
@@ -72,9 +66,7 @@ func ReleaseClean(root string) {
 
 	var cleaned int
 	for origPath := range ov.Replace {
-		if !strings.HasSuffix(origPath, ".inco.go") {
-			continue
-		}
+		// @inco: strings.HasSuffix(origPath, ".inco.go"), -continue
 
 		releasePath := releasePathFor(origPath)
 		backupPath := backupPathFor(origPath)
@@ -103,14 +95,11 @@ func ReleaseClean(root string) {
 func loadOverlay(root string) Overlay {
 	overlayPath := filepath.Join(root, ".inco_cache", "overlay.json")
 	data, err := os.ReadFile(overlayPath)
-	if err != nil {
-		panic(err)
-	}
+	_ = err // @inco: err == nil, -panic(err)
 
 	var ov Overlay
-	if err := json.Unmarshal(data, &ov); err != nil {
-		panic(err)
-	}
+	err = json.Unmarshal(data, &ov)
+	_ = err // @inco: err == nil, -panic(err)
 	return ov
 }
 
