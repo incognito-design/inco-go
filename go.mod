@@ -1,4 +1,4 @@
-module github.com/incognito-design/inco
+module github.com/incognito-design/inco-go
 
 go 1.25.0
 
