@@ -70,6 +70,13 @@ type Directive struct {
 	Expr       string        // the Go boolean expression (@require only)
 }
 
+// keywords maps directive prefixes to their DirectiveKind.
+var keywords = map[string]DirectiveKind{
+	"@require": KindRequire,
+	"@must":    KindMust,
+	"@ensure":  KindEnsure,
+}
+
 // ParseDirective extracts a Directive from a comment string.
 // Returns nil when the comment is not a valid directive.
 func ParseDirective(comment string) *Directive {
@@ -80,58 +87,36 @@ func ParseDirective(comment string) *Directive {
 
 	var kind DirectiveKind
 	var keyword string
-
-	switch {
-	case strings.HasPrefix(s, "@require"):
-		kind = KindRequire
-		keyword = "@require"
-	case strings.HasPrefix(s, "@must"):
-		kind = KindMust
-		keyword = "@must"
-	case strings.HasPrefix(s, "@ensure"):
-		kind = KindEnsure
-		keyword = "@ensure"
-	default:
+	for kw, k := range keywords {
+		if strings.HasPrefix(s, kw) {
+			kind = k
+			keyword = kw
+			break
+		}
+	}
+	if keyword == "" {
 		return nil
 	}
 
 	rest := strings.TrimSpace(s[len(keyword):])
 	d := &Directive{Kind: kind, Action: ActionPanic}
 
-	switch kind {
-	case KindRequire:
-		// syntax: @require <expression> [panic[("msg")]]
-		if rest == "" {
-			return nil // expression is mandatory
-		}
-		d.Expr = parseTrailingPanic(d, rest)
-		if d.Expr == "" {
-			return nil
-		}
-	case KindMust, KindEnsure:
-		// syntax: @must/@ensure [panic[("msg")]]
-		if rest == "" {
-			return d // bare → default panic
-		}
-		if !parsePanicAction(d, rest) {
-			return nil // trailing text is not a valid action
-		}
+	if parse, ok := kindParsers[kind]; ok {
+		return parse(d, rest)
 	}
-
 	return d
 }
 
-// parseTrailingPanic extracts an optional panic keyword (and args) from
-// the END of rest.  Returns the expression part (everything before panic).
-//
-// Syntax: <expression> [panic[("msg")]]
-//
-// Since panic is a Go builtin, it cannot appear as a standalone identifier
-// in a valid Go expression, making the split unambiguous.
-func parseTrailingPanic(d *Directive, rest string) string {
-	rest = strings.TrimSpace(rest)
+// kindParsers maps each DirectiveKind to its rest-string parser.
+var kindParsers = map[DirectiveKind]func(d *Directive, rest string) *Directive{
+	KindRequire: parseRequireRest,
+	KindMust:    parseInlineRest,
+	KindEnsure:  parseInlineRest,
+}
+
+func parseRequireRest(d *Directive, rest string) *Directive {
 	if rest == "" {
-		return ""
+		return nil // expression is mandatory
 	}
 
 	// Try "expr panic(args...)" — find rightmost " panic("
@@ -140,33 +125,40 @@ func parseTrailingPanic(d *Directive, rest string) string {
 		argStart := idx + len(" panic") // position of '('
 		args, remaining, ok := parseActionArgs(rest[argStart:])
 		if ok && strings.TrimSpace(remaining) == "" {
-			d.Action = ActionPanic
 			d.ActionArgs = args
-			return strings.TrimSpace(rest[:idx])
+			d.Expr = strings.TrimSpace(rest[:idx])
+			if d.Expr == "" {
+				return nil
+			}
+			return d
 		}
 	}
 
 	// Try "expr panic" — bare panic at end
-	suffix := " panic"
-	if strings.HasSuffix(rest, suffix) {
-		d.Action = ActionPanic
-		return strings.TrimSpace(rest[:len(rest)-len(suffix)])
+	if strings.HasSuffix(rest, " panic") {
+		d.Expr = strings.TrimSpace(rest[:len(rest)-len(" panic")])
+		if d.Expr == "" {
+			return nil
+		}
+		return d
 	}
 
-	return rest // no action found — entire rest is the expression
+	// No action found — entire rest is the expression.
+	d.Expr = rest
+	return d
 }
 
-// parsePanicAction attempts to parse "panic" (and optional parenthesised
-// arguments) from the front of rest.  Used for @must / @ensure.
-func parsePanicAction(d *Directive, rest string) bool {
+func parseInlineRest(d *Directive, rest string) *Directive {
+	if rest == "" {
+		return d // bare → default panic
+	}
 	if !strings.HasPrefix(rest, "panic") {
-		return false
+		return nil
 	}
 	after := rest[len("panic"):]
 	if len(after) > 0 && after[0] != ' ' && after[0] != '\t' && after[0] != '(' {
-		return false
+		return nil
 	}
-	d.Action = ActionPanic
 	after = strings.TrimSpace(after)
 	if strings.HasPrefix(after, "(") {
 		args, _, ok := parseActionArgs(after)
@@ -174,7 +166,7 @@ func parsePanicAction(d *Directive, rest string) bool {
 			d.ActionArgs = args
 		}
 	}
-	return true
+	return d
 }
 
 // ---------------------------------------------------------------------------
