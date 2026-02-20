@@ -39,8 +39,6 @@ func FetchUser(db *DB, id string) (*User, error) {
 	// @inco: len(id) > 0, -panic("empty id")
 
 	user, err := db.Query("SELECT * FROM users WHERE id = ?")
-	if err != nil {
-		return nil, err
-	}
+	_ = err // @inco: err == nil, -return(nil, err)
 	return user, nil
 }

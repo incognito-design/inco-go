@@ -27,9 +27,7 @@ func Transfer(from *Account, to *Account, amount int) {
 
 	query := fmt.Sprintf("UPDATE accounts SET balance = balance - %d WHERE id = '%s'", amount, from.ID)
 	res, err := db.Exec(query)
-	if err != nil {
-		panic(err)
-	}
+	_ = err // @inco: err == nil, -panic(err)
 
 	fmt.Printf("Transfer %d from %s to %s, affected %d rows\n",
 		amount, from.ID, to.ID, res.RowsAffected)

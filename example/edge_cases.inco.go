@@ -20,9 +20,7 @@ func FindUser(db *DB, id string) (*User, error) {
 	// @inco: db != nil, -panic("db is nil")
 	// @inco: len(id) > 0, -panic(fmt.Sprintf("invalid id: %q", id))
 	user, err := db.Query("SELECT * FROM users WHERE id = ?")
-	if err != nil {
-		return nil, err
-	}
+	_ = err // @inco: err == nil, -return(nil, err)
 	return user, nil
 }
 
@@ -87,8 +85,6 @@ func Guard(x int) {
 func SafeSlice(s []int, start, end int) []int {
 	// @inco: start >= 0
 	// @inco: end <= len(s)
-	if start > end {
-		return nil
-	}
+	// @inco: start <= end, -return(nil)
 	return s[start:end]
 }
