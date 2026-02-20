@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// TestRelease verifies that Release copies shadow files alongside originals
-// with the correct build tags and generated-code header.
+// TestRelease verifies that Release generates .go from .inco.go shadows
+// and renames .inco.go → .inco backup.
 func TestRelease(t *testing.T) {
 	dir := setupDir(t, map[string]string{
-		"main.go": `package main
+		"main.inco.go": `package main
 
 func main() {
 	x := 42
@@ -31,8 +31,8 @@ func main() {
 	// 2. Release.
 	Release(dir)
 
-	// 3. Check released file exists.
-	releasePath := filepath.Join(dir, "main_inco.go")
+	// 3. Check released .go file exists.
+	releasePath := filepath.Join(dir, "main.go")
 	releaseContent, err := os.ReadFile(releasePath)
 	if err != nil {
 		t.Fatalf("released file not found: %v", err)
@@ -43,35 +43,29 @@ func main() {
 	if !strings.HasPrefix(rc, releaseHeader) {
 		t.Error("released file missing generated-code header")
 	}
-	// Must have //go:build inco.
-	if !strings.Contains(rc, "//go:build inco") {
-		t.Error("released file missing //go:build inco tag")
-	}
-	// Must NOT have //go:build !inco (stripped from shadow).
-	if strings.Contains(rc, "//go:build !inco") {
-		t.Error("released file should not contain //go:build !inco")
-	}
-	// Must contain the guard (if !(x > 0) { panic(...) }).
+	// Must contain the guard.
 	if !strings.Contains(rc, "if !(x > 0)") {
 		t.Error("released file missing injected guard")
 	}
-
-	// 4. Check original file got //go:build !inco.
-	origContent, err := os.ReadFile(filepath.Join(dir, "main.go"))
-	if err != nil {
-		t.Fatal(err)
+	// Must preserve //line directives for stack traces.
+	if !strings.Contains(rc, "//line ") {
+		t.Error("released file should contain //line directives")
 	}
-	oc := string(origContent)
-	if !strings.HasPrefix(oc, excludeBuildTag) {
-		t.Error("original file missing //go:build !inco tag")
+
+	// 4. Check original .inco.go was renamed to .inco.
+	if _, err := os.Stat(filepath.Join(dir, "main.inco.go")); !os.IsNotExist(err) {
+		t.Error("original .inco.go should be renamed away")
+	}
+	backupPath := filepath.Join(dir, "main.inco")
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Error("backup .inco file should exist")
 	}
 }
 
-// TestRelease_Idempotent ensures running Release twice doesn't double-tag
-// the original file.
-func TestRelease_Idempotent(t *testing.T) {
+// TestRelease_SkipsNonIncoGo ensures Release ignores plain .go files.
+func TestRelease_SkipsNonIncoGo(t *testing.T) {
 	dir := setupDir(t, map[string]string{
-		"main.go": `package main
+		"plain.go": `package main
 
 func main() {
 	// @require true
@@ -81,24 +75,18 @@ func main() {
 
 	e := NewEngine(dir)
 	e.Run()
-
 	Release(dir)
-	Release(dir) // second call
 
-	origContent, _ := os.ReadFile(filepath.Join(dir, "main.go"))
-	oc := string(origContent)
-
-	// Should have exactly one //go:build !inco.
-	count := strings.Count(oc, "//go:build !inco")
-	if count != 1 {
-		t.Errorf("expected 1 //go:build !inco, got %d", count)
+	// plain.go should NOT have been renamed or duplicated.
+	if _, err := os.Stat(filepath.Join(dir, "plain.inco")); !os.IsNotExist(err) {
+		t.Error("plain.go should not be backed up")
 	}
 }
 
-// TestReleaseClean removes released files and restores originals.
+// TestReleaseClean restores .inco → .inco.go and removes generated .go.
 func TestReleaseClean(t *testing.T) {
 	dir := setupDir(t, map[string]string{
-		"main.go": `package main
+		"main.inco.go": `package main
 
 func main() {
 	// @require true
@@ -108,27 +96,29 @@ func main() {
 
 	e := NewEngine(dir)
 	e.Run()
-
 	Release(dir)
 
-	// Verify released file exists.
-	releasePath := filepath.Join(dir, "main_inco.go")
-	if _, err := os.Stat(releasePath); err != nil {
-		t.Fatal("released file should exist before clean")
+	// Verify state after release.
+	if _, err := os.Stat(filepath.Join(dir, "main.go")); err != nil {
+		t.Fatal("released .go file should exist before clean")
 	}
 
 	// Clean.
 	ReleaseClean(dir)
 
-	// Released file should be gone.
-	if _, err := os.Stat(releasePath); !os.IsNotExist(err) {
-		t.Error("released file should be removed after clean")
+	// Generated .go removed.
+	if _, err := os.Stat(filepath.Join(dir, "main.go")); !os.IsNotExist(err) {
+		t.Error("generated .go should be removed after clean")
 	}
 
-	// Original should no longer have //go:build !inco.
-	origContent, _ := os.ReadFile(filepath.Join(dir, "main.go"))
-	if strings.Contains(string(origContent), "//go:build !inco") {
-		t.Error("original should have //go:build !inco removed after clean")
+	// Original .inco.go restored.
+	if _, err := os.Stat(filepath.Join(dir, "main.inco.go")); err != nil {
+		t.Error("original .inco.go should be restored after clean")
+	}
+
+	// No .inco backup left.
+	if _, err := os.Stat(filepath.Join(dir, "main.inco")); !os.IsNotExist(err) {
+		t.Error(".inco backup should be gone after clean")
 	}
 }
 
@@ -138,8 +128,8 @@ func TestReleasePathFor(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"/a/b/main.go", "/a/b/main_inco.go"},
-		{"/src/engine.go", "/src/engine_inco.go"},
+		{"/a/b/main.inco.go", "/a/b/main.go"},
+		{"/src/engine.inco.go", "/src/engine.go"},
 	}
 	for _, tt := range tests {
 		got := releasePathFor(tt.input)
@@ -149,34 +139,19 @@ func TestReleasePathFor(t *testing.T) {
 	}
 }
 
-// TestScanner_SkipsIncoFiles verifies the engine skips _inco.go files.
-func TestScanner_SkipsIncoFiles(t *testing.T) {
-	dir := setupDir(t, map[string]string{
-		"main.go": `package main
-
-func main() {
-	// @require true
-}
-`,
-		// This _inco.go file should be ignored by the scanner.
-		"main_inco.go": `package main
-
-func init() {
-	// @require false
-}
-`,
-	})
-
-	e := NewEngine(dir)
-	e.Run()
-
-	// Only main.go should appear in the overlay (not main_inco.go).
-	if len(e.Overlay.Replace) != 1 {
-		t.Errorf("expected 1 overlay entry, got %d", len(e.Overlay.Replace))
+// TestBackupPathFor tests the backup helper function.
+func TestBackupPathFor(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/a/b/main.inco.go", "/a/b/main.inco"},
+		{"/src/engine.inco.go", "/src/engine.inco"},
 	}
-	for orig := range e.Overlay.Replace {
-		if strings.HasSuffix(orig, "_inco.go") {
-			t.Error("scanner should not process _inco.go files")
+	for _, tt := range tests {
+		got := backupPathFor(tt.input)
+		if got != tt.want {
+			t.Errorf("backupPathFor(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }
