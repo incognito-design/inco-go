@@ -240,13 +240,12 @@ func (r *AuditResult) PrintReport(w io.Writer) {
 	fmt.Fprintf(w, "  ─────────────────────\n")
 	fmt.Fprintf(w, "  Total directives:   %d\n", r.TotalDirectives)
 	fmt.Fprintf(w, "  Native if stmts:    %d\n", r.TotalIfs)
-	if r.TotalIfs > 0 {
-		ratio := float64(r.TotalDirectives) / float64(r.TotalIfs)
-		fmt.Fprintf(w, "  Directive/if ratio: %.2f\n\n", ratio)
-	} else if r.TotalDirectives > 0 {
-		fmt.Fprintf(w, "  Directive/if ratio: ∞ (no if statements)\n\n")
+	total := r.TotalDirectives + r.TotalIfs
+	if total > 0 {
+		ratio := float64(r.TotalDirectives) / float64(total) * 100
+		fmt.Fprintf(w, "  inco/(if+inco):     %.1f%%\n\n", ratio)
 	} else {
-		fmt.Fprintf(w, "  Directive/if ratio: — (no directives or if statements)\n\n")
+		fmt.Fprintf(w, "  inco/(if+inco):     — (no directives or if statements)\n\n")
 	}
 
 	// --- Per-file breakdown ---
