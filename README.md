@@ -125,28 +125,6 @@ func (e *Engine) processFile(path string) {
 
 Shadow files live in `.inco_cache/` and are wired in via `go build -overlay`.
 
-## Generics
-
-Works with generic functions and types:
-
-```go
-func Clamp[N Number](val, lo, hi N) N {
-    // @inco: lo <= hi
-    if val < lo {
-        return lo
-    }
-    if val > hi {
-        return hi
-    }
-    return val
-}
-
-func NewPair[K comparable, V any](key K, value V) Pair[K, V] {
-    // @inco: key != *new(K), -panic("key must not be zero")
-    return Pair[K, V]{Key: key, Value: value}
-}
-```
-
 ## Auto-Import
 
 When directive arguments reference standard library packages (e.g. `fmt.Sprintf`, `errors.New`), Inco automatically adds the corresponding import to the shadow file via `astutil.AddImport`. No manual import management needed.
