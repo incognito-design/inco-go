@@ -1,7 +1,5 @@
 # Inco
 
-Invisible constraints. Invincible code.
-
 Inco is a compile-time assertion engine for Go. Write contract directives as plain comments; they are transformed into runtime guards in shadow files, wired in via `go build -overlay`. Your source stays untouched.
 
 ## Philosophy
@@ -227,13 +225,9 @@ This removes each generated `foo.go` and restores `foo.inco` → `foo.inco.go`.
 
 ## Build from Source
 
-Inco requires itself to build (self-hosting). Install it first:
-
 ```bash
 go install github.com/imnive-design/inco-go/cmd/inco@latest
 ```
-
-Then:
 
 ```bash
 make build      # inco build → bin/inco
@@ -242,8 +236,6 @@ make gen        # Regenerate overlay
 make clean      # Remove .inco_cache/ and bin/
 make install    # Install to $GOPATH/bin
 ```
-
-`make bootstrap` is available as a fallback — it does a plain `go build` (without contracts) to produce a temporary binary, then uses that binary to build the real one. This is only needed if inco is not yet in PATH.
 
 ## Audit
 
@@ -281,7 +273,7 @@ Ignored by .incoignore (4):
   example/transfer.inco.go
 ```
 
-The goal: drive `inco/(if+inco)` above 50%, meaning the majority of defensive checks live in directives rather than manual `if` statements. When Inco self-hosts, it already exceeds this target at **53.2%**.
+The goal: drive `inco/(if+inco)` above 50%, meaning the majority of defensive checks live in directives rather than manual `if` statements.
 
 ## How It Works
 
@@ -335,52 +327,19 @@ generated/
 
 Nested `.incoignore` files are supported — rules in a subdirectory apply only to that subtree. `inco audit` reports which files were ignored.
 
-## Self-Hosting Notes
+## Notes
 
-Inco is self-hosting — it uses `@inco:` directives in its own source code. The development workflow is:
-
-1. Install inco from the release repo (`inco-go`) via `go install`
-2. Use the installed `inco` to build/test the development repo
-3. When changes are ready, `inco release` + push to `inco-go`
-
-This circular dependency works because `@inco:` directives are plain Go comments — the code compiles and runs correctly with or without directive expansion.
-
-### Key design insights from self-hosting
-
-### Directives are guards, not logic
-
-`@inco:` replaces defensive `if`-blocks — nil checks, error checks, range validation. It does **not** replace logic flow. The remaining `if` statements are genuine branching decisions that the program needs to make.
-
-For example, "skip this directory" is logic, not a guard — it stays as `if`. But `err != nil → panic` is a guard — it becomes `// @inco:`.
+Inco is self-hosting — it uses `@inco:` directives in its own source code. Since directives are plain Go comments, the code compiles with or without expansion.
 
 ### Inline directives solve the unused-variable problem
 
-When an error is only used in a directive, Go complains about an unused variable. The solution:
+When a variable is only used in a directive, Go complains about an unused variable. The solution:
 
 ```go
 _ = err // @inco: err == nil, -panic(err)
 ```
 
-`_ = err` satisfies the compiler when building without inco (e.g. plain `go build`), while `// @inco:` generates the real guard in the overlay.
-
-### Source must compile without directives
-
-Since directives are comments, `go build` ignores them. This means the code must be **valid and runnable** without any `@inco:` expansion. This constraint is actually a strength — it guarantees every `.inco.go` file is testable and buildable with zero tooling.
-
-### Three-level classification was necessary
-
-Naive "is it a comment line? → standalone, else inline" broke on struct field comments. AST analysis was the only robust way to distinguish:
-
-1. Comment lines → standalone directives
-2. Statement lines → inline directives  
-3. Everything else → not a directive
-
-### Current self-hosting stats
-
-- 67 `@inco:` directives, 59 `if` statements
-- **inco/(if+inco): 53.2%** — majority of guards are directives
-- 57.7% function coverage (30/52 functions guarded)
-- 9 source files mapped through overlay
+`_ = err` satisfies the compiler when building without inco, while `// @inco:` generates the real guard in the overlay.
 
 ## Design
 
@@ -390,7 +349,6 @@ Naive "is it a comment line? → standalone, else inline" broke on struct field 
 - **Cache-friendly**: Content-hash (SHA-256) based shadow filenames for stable build cache
 - **Source-mapped**: `//line` directives preserve original file:line in stack traces
 - **Auto-import**: Standard library references in directive args are auto-imported
-- **Self-hosting**: Inco builds itself with its own directives
 
 ## License
 
