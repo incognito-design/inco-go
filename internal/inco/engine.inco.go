@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/tools/go/ast/astutil"
 )
@@ -76,6 +77,7 @@ func (e *Engine) Run() {
 	}
 
 	var wg sync.WaitGroup
+	var workerErr atomic.Value // stores first panic as error
 	ch := make(chan int, len(paths))
 	for i := range paths {
 		ch <- i
@@ -86,6 +88,11 @@ func (e *Engine) Run() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					workerErr.CompareAndSwap(nil, fmt.Errorf("%v", r))
+				}
+			}()
 			// Each goroutine gets its own fset to avoid contention.
 			fset := token.NewFileSet()
 			for idx := range ch {
@@ -115,6 +122,11 @@ func (e *Engine) Run() {
 		}()
 	}
 	wg.Wait()
+
+	// Re-panic on main goroutine so guardPanic() in main() can catch it.
+	if v := workerErr.Load(); v != nil {
+		panic(v)
+	}
 
 	// Collect results sequentially — write shadows, build overlay & manifest.
 	newManifest := &Manifest{Files: make(map[string]ManifestEntry)}
